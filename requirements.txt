@@ -1,0 +1,6 @@
+pandas
+requests
+pydantic
+python-dotenv
+pytest
+PySide6
