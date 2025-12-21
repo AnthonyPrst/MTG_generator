@@ -12,6 +12,9 @@ logger = logging.getLogger(__name__)
 class ExternalDataProvider:
     """Gère la récupération des données externes."""
 
+    def __init__(self) -> None:
+        self._scryfall_cache: dict[str, dict] = {}
+
     def get_archidekt_decks_id_for_commander(self, commander_name: str, order_by: str) -> list[str]:
         """Récupère les ids des decks archideckt en fonction d'un commandant spécifique.
 
@@ -71,12 +74,16 @@ class ExternalDataProvider:
         Returns:
             les informations de la carte
         """
+        if scryfall_id in self._scryfall_cache:
+            return self._scryfall_cache[scryfall_id]
+
         try:
             # Appel à l'API Scryfall
             time.sleep(0.075)
             response = requests.get(f"https://api.scryfall.com/cards/{scryfall_id}")
             response.raise_for_status()  # Lève une exception pour les codes d'erreur HTTP
             card_data = response.json()
+            self._scryfall_cache[scryfall_id] = card_data
             return card_data
             
         except requests.exceptions.RequestException as e:
@@ -105,5 +112,17 @@ class ExternalDataProvider:
                 if urls:
                     return urls.get("normal") or urls.get("large") or urls.get("png")
         return None
+
+    def get_card_cmc(self, scryfall_id: str) -> Optional[float]:
+        """Retourne le coût converti de mana (cmc) d'une carte depuis Scryfall (cache)."""
+        if not scryfall_id:
+            return None
+        data = self.get_scryfall_data(scryfall_id)
+        if not data:
+            return None
+        try:
+            return float(data.get("cmc")) if data.get("cmc") is not None else None
+        except (TypeError, ValueError):
+            return None
 
 

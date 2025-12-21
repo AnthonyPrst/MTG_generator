@@ -4,3 +4,5 @@ pydantic
 python-dotenv
 pytest
 PySide6
+auto-py-to-exe
+matplotlib

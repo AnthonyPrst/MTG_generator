@@ -137,6 +137,12 @@ class CollectionManager:
         ):
             reader = csv.DictReader(csvfile)
             cursor = conn.cursor()
+
+            cursor.execute("SELECT LOWER(name) as name, scryfall_id FROM cards")
+            existing_cards: Set[tuple[str, str]] = {
+                (row["name"], (row["scryfall_id"] or "").strip()) for row in cursor.fetchall()
+            }
+            inserted_count = 0
             
             # Vérifier les colonnes requises
             if import_type == "ManaBox - Collection":
@@ -145,16 +151,17 @@ class CollectionManager:
                 if not required_columns.issubset(reader.fieldnames or []):
                     raise ValueError(f"Le fichier ManaBox doit contenir les colonnes : {required_columns}")
                 
-                # Vider la table existante
-                cursor.execute("DELETE FROM cards")
                 self.external_data_priovider = ExternalDataProvider()
                 
-                # Insérer les nouvelles données
+                # Insérer uniquement les nouvelles données
                 for row in reader:
                     scryfall_id = row.get('Scryfall ID', '').strip()
+                    key = (row['Name'].strip().lower(), scryfall_id)
+                    if key in existing_cards:
+                        continue
                     oracle_id, image, types, colors = self._get_some_data_from_scryfall(scryfall_id)
                     cursor.execute("""
-                        INSERT OR REPLACE INTO cards 
+                        INSERT OR IGNORE INTO cards 
                         (name, colors, types, scryfall_id, oracle_id, set_code, set_name, collector_number, image_url,
                             foil, rarity, quantity, card_condition, language)
                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -174,31 +181,37 @@ class CollectionManager:
                         row.get('Condition', '').strip(),
                         row.get('Language', 'English').strip()
                     ))
+                    inserted_count += cursor.rowcount
+                    existing_cards.add(key)
                 
             elif import_type == "Moxfield":
                 required_columns = {'name', 'scryfall_id', 'colors', 'types', 'quantity'}
                 if not required_columns.issubset(reader.fieldnames or []):
                     raise ValueError(f"Le fichier Moxfield doit contenir les colonnes : {required_columns}")
                 
-                cursor.execute("DELETE FROM cards")
-                
                 for row in reader:
+                    scryfall_id = row.get('scryfall_id', '').strip()
+                    key = (row['name'].strip().lower(), scryfall_id)
+                    if key in existing_cards:
+                        continue
                     cursor.execute("""
-                        INSERT OR REPLACE INTO cards 
+                        INSERT OR IGNORE INTO cards 
                         (name, scryfall_id, colors, types, quantity)
                         VALUES (?, ?, ?, ?, ?)
                     """, (
                         row['name'].strip(),
-                        row.get('scryfall_id', '').strip(),
+                        scryfall_id,
                         row.get('colors', '').upper().strip(),
                         row.get('types', '').strip(),
                         int(row.get('quantity', 1))
                     ))
+                    inserted_count += cursor.rowcount
+                    existing_cards.add(key)
             else:
                 raise ValueError(f"Type d'import non supporté : {import_type}")
             
             conn.commit()
-            logger.info(f"Collection chargée depuis {self.csv_path} : {cursor.rowcount} cartes")
+            logger.info(f"Collection chargée depuis {self.csv_path} : {inserted_count} nouvelles cartes")
 
     def get_all_cards(self) -> List[Dict[str, Any]]:
         """Récupère toutes les cartes de la collection.

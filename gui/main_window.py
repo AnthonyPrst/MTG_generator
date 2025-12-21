@@ -23,9 +23,10 @@ from PySide6.QtWidgets import (
     QScrollArea,
     QGridLayout,
     QProgressDialog,
+    QSizePolicy,
 )
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QPixmap
+from PySide6.QtGui import QPixmap, QPainter
 
 class MainWindow(QMainWindow):
     """Fenêtre principale de l'application."""
@@ -34,7 +35,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.app = app
         self.setWindowTitle("MTG Commander Deck Builder")
-        self.setMinimumSize(1780, 1200)
+        self.setMinimumSize(1980, 1200)
         self.card_index_to_widget = {}
         self.card_index_to_pixmap = {}
         self.cards_data = []
@@ -52,6 +53,7 @@ class MainWindow(QMainWindow):
         # Onglets
         self.tabs = QTabWidget()
         self.layout.addWidget(self.tabs)
+        self._apply_modern_styles()
         
         # Onglet Construction
         self.setup_build_tab()
@@ -71,8 +73,10 @@ class MainWindow(QMainWindow):
         main_layout = QHBoxLayout(tab)
         layout1 = QVBoxLayout()
         layout2 = QVBoxLayout()
+        layout3 = QVBoxLayout()
         main_layout.addLayout(layout1)
         main_layout.addLayout(layout2)
+        main_layout.addLayout(layout3)
         
         # Sélection du commandant
         form_layout = QFormLayout()
@@ -146,6 +150,40 @@ class MainWindow(QMainWindow):
         layout2.addWidget(self.deck_filter_role)
         layout2.addWidget(self.deck_images_area)
 
+        # Carte "statistiques" à droite
+        self.stats_card = QWidget()
+        self.stats_card.setObjectName("statsCard")
+        stats_card_layout = QVBoxLayout(self.stats_card)
+        stats_card_layout.setContentsMargins(16, 16, 16, 16)
+        stats_card_layout.setSpacing(14)
+
+        self.mana_curve_label = QLabel("Courbe de mana")
+        self.mana_curve_label.setObjectName("statsTitle")
+        self.mana_curve_label.setWordWrap(True)
+        self.mana_curve_image = QLabel()
+        self.mana_curve_image.setAlignment(Qt.AlignCenter)
+        self.mana_curve_image.setMinimumHeight(320)
+        self.mana_curve_image.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.mana_curve_image.setStyleSheet("background: #161b22; border: 1px solid #243040; border-radius: 10px; padding: 8px;")
+
+        self.deck_stats_label = QLabel("Statistiques")
+        self.deck_stats_label.setObjectName("statsTitle")
+        self.deck_stats_label.setWordWrap(True)
+
+        self.deck_roles_image = QLabel()
+        self.deck_roles_image.setAlignment(Qt.AlignCenter)
+        self.deck_roles_image.setMinimumHeight(320)
+        self.deck_roles_image.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.deck_roles_image.setStyleSheet("background: #161b22; border: 1px solid #243040; border-radius: 10px; padding: 8px;")
+
+        stats_card_layout.addWidget(self.mana_curve_label)
+        stats_card_layout.addWidget(self.mana_curve_image)
+        stats_card_layout.addWidget(self.deck_stats_label)
+        stats_card_layout.addWidget(self.deck_roles_image)
+        stats_card_layout.addStretch()
+
+        layout3.addWidget(self.stats_card)
+
         self.search_commander_btn.clicked.connect(self.app.get_decks_archidekt_from_commander)
         self.export_deck_found_list.clicked.connect(self.app.export_eventual_cards_list)
         self.build_btn.clicked.connect(self.app.build_deck)
@@ -154,6 +192,148 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(tab, "Construction")
         # Aperçu initial du commandant sélectionné
         self.update_commander_preview(self.commander_input.currentText())
+
+    def set_deck_stats(self, mana_curve_text: str, stats_text: str):
+        """Affiche la courbe de mana et les stats synthétiques du deck."""
+        self.mana_curve_label.setText(mana_curve_text)
+        self.deck_stats_label.setText(stats_text)
+    
+    def set_deck_graphs(self, mana_curve_pixmap, roles_pixmap):
+        """Affiche les représentations graphiques."""
+        if mana_curve_pixmap:
+            self.mana_curve_image.setPixmap(mana_curve_pixmap)
+        else:
+            self.mana_curve_image.clear()
+        if roles_pixmap:
+            self.deck_roles_image.setPixmap(roles_pixmap)
+        else:
+            self.deck_roles_image.clear()
+        # Ajuster les tailles pour garder un rendu net
+        for lbl in (self.mana_curve_image, self.deck_roles_image):
+            if lbl.pixmap():
+                lbl.setPixmap(lbl.pixmap().scaled(lbl.width(), lbl.height(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
+
+    def show_progress(self, title: str, label: str, maximum: int = 0):
+        """Affiche une barre de progression modale (0 = busy)."""
+        self.progress_dialog = QProgressDialog(label, "Annuler", 0, maximum, self)
+        self.progress_dialog.setWindowTitle(title)
+        self.progress_dialog.setWindowModality(Qt.WindowModal)
+        self.progress_dialog.setAutoClose(False)
+        self.progress_dialog.setAutoReset(False)
+        self.progress_dialog.setCancelButton(None)
+        # Pour un mode indéterminé, Qt recommande min=max=0
+        if maximum and maximum > 0:
+            self.progress_dialog.setRange(0, maximum)
+        else:
+            self.progress_dialog.setRange(0, 0)
+        self.progress_dialog.setMinimumDuration(0)
+        self.progress_dialog.setValue(0)
+        self.progress_dialog.show()
+        QApplication.processEvents()
+
+    def update_progress(self, value: int):
+        if hasattr(self, "progress_dialog") and self.progress_dialog:
+            self.progress_dialog.setValue(value)
+            QApplication.processEvents()
+
+    def close_progress(self):
+        if hasattr(self, "progress_dialog") and self.progress_dialog:
+            self.progress_dialog.close()
+            self.progress_dialog = None
+    
+    def refresh_commander_candidates(self):
+        """Rafraîchit la liste des commandants disponibles après mise à jour de la collection."""
+        candidates = self.app.collection_manager.get_commander_candidates()
+        current = self.commander_input.currentText()
+        self.commander_input.blockSignals(True)
+        self.commander_input.clear()
+        self.commander_input.addItems(candidates)
+        # Rétablir la sélection si possible
+        idx = self.commander_input.findText(current, Qt.MatchFixedString | Qt.MatchCaseSensitive)
+        if idx == -1:
+            idx = 0 if candidates else -1
+        if idx >= 0:
+            self.commander_input.setCurrentIndex(idx)
+        # Mettre à jour l'auto-complétion
+        completer = QCompleter(candidates, self)
+        completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+        self.commander_input.setCompleter(completer)
+        self.commander_input.blockSignals(False)
+        # Mettre à jour l'aperçu du commandant affiché
+        self.update_commander_preview(self.commander_input.currentText())
+
+    def _apply_modern_styles(self):
+        """Applique un thème moderne sombre pour une meilleure lisibilité."""
+        self.setStyleSheet("""
+            QWidget {
+                background-color: #0d1117;
+                color: #e6edf3;
+                font-family: 'Segoe UI', 'Inter', sans-serif;
+                font-size: 13px;
+            }
+            QTabWidget::pane {
+                border: 1px solid #1f2937;
+                border-radius: 6px;
+            }
+            QTabBar::tab {
+                background: #161b22;
+                border: 1px solid #1f2937;
+                padding: 8px 14px;
+                margin-right: 2px;
+                border-top-left-radius: 6px;
+                border-top-right-radius: 6px;
+            }
+            QTabBar::tab:selected {
+                background: #1f2937;
+                border-color: #2563eb;
+            }
+            QListWidget {
+                background: #0f172a;
+                border: 1px solid #1f2937;
+                border-radius: 6px;
+            }
+            QLineEdit, QComboBox, QTextEdit {
+                background: #0f172a;
+                border: 1px solid #1f2937;
+                border-radius: 6px;
+                padding: 6px 8px;
+            }
+            QPushButton {
+                background: #2563eb;
+                color: white;
+                border: none;
+                border-radius: 6px;
+                padding: 8px 12px;
+            }
+            QPushButton:hover {
+                background: #1d4ed8;
+            }
+            QPushButton:pressed {
+                background: #1e3a8a;
+            }
+            QLabel#statsTitle {
+                font-size: 15px;
+                font-weight: 600;
+                color: #93c5fd;
+            }
+            QWidget#statsCard {
+                background: #111827;
+                border: 1px solid #243040;
+                border-radius: 10px;
+            }
+            QProgressBar {
+                border: 1px solid #1f2937;
+                border-radius: 6px;
+                background: #0f172a;
+                height: 16px;
+                text-align: center;
+                color: #e6edf3;
+            }
+            QProgressBar::chunk {
+                background: #2563eb;
+                border-radius: 6px;
+            }
+        """)
     
     def setup_collection_tab(self):
         """Configure l'onglet de gestion de la collection."""
@@ -325,37 +505,86 @@ class MainWindow(QMainWindow):
             self.preview_label.setText("Aperçu")
 
     def update_commander_preview(self, commander_name: str):
-        """Met à jour l'aperçu avec l'image du commandant choisi."""
+        """Met à jour l'aperçu avec l'image du commandant choisi, y compris double-face."""
         if not commander_name:
             if self.preview_label:
                 self.preview_label.setText("Aperçu")
             return
-        card = self.app.collection_manager.get_card(commander_name)
-        url = None
-        if card:
-            url = card.get("image_url")
-            scryfall_id = card.get("scryfall_id")
-        else:
-            scryfall_id = None
-        if not url and scryfall_id:
+
+        def _load_pixmap(url: str) -> Optional[QPixmap]:
             try:
-                url = self.app.external_provider.get_image_url_from_scryfall(scryfall_id)
+                resp = requests.get(url)
+                resp.raise_for_status()
+                pix = QPixmap()
+                pix.loadFromData(resp.content)
+                return pix if not pix.isNull() else None
             except Exception:
-                url = None
-        if not url:
+                return None
+
+        def _get_face_urls(scryfall_id: str) -> list[str]:
+            urls: list[str] = []
+            try:
+                data = self.app.external_provider.get_scryfall_data(scryfall_id)
+            except Exception:
+                return urls
+            if not data:
+                return urls
+            if "image_uris" in data:
+                image_uris = data["image_uris"]
+                candidate = image_uris.get("normal") or image_uris.get("large") or image_uris.get("png")
+                if candidate:
+                    urls.append(candidate)
+            for face in data.get("card_faces", []) or []:
+                iu = face.get("image_uris") or {}
+                candidate = iu.get("normal") or iu.get("large") or iu.get("png")
+                if candidate:
+                    urls.append(candidate)
+            return urls
+
+        card = self.app.collection_manager.get_card(commander_name)
+        scryfall_id = card.get("scryfall_id") if card else None
+
+        urls: list[str] = []
+        if card and card.get("image_url"):
+            urls.append(card["image_url"])
+        if scryfall_id:
+            fetched_urls = _get_face_urls(scryfall_id)
+            for u in fetched_urls:
+                if u not in urls:
+                    urls.append(u)
+
+        pixmaps = []
+        urls.reverse()
+        for url in urls:
+            pix = _load_pixmap(url)
+            if pix:
+                pixmaps.append(pix)
+            if len(pixmaps) >= 2:  # deux faces suffisent
+                break
+
+        if not pixmaps:
             if self.preview_label:
                 self.preview_label.setText("Aperçu")
             return
-        try:
-            resp = requests.get(url)
-            resp.raise_for_status()
-            pix = QPixmap()
-            pix.loadFromData(resp.content)
-            if self.preview_label:
-                self.preview_label.setPixmap(pix.scaledToWidth(360, Qt.SmoothTransformation))
-        except Exception:
-            if self.preview_label:
-                self.preview_label.setText("Aperçu")
+
+        # Si deux faces, les afficher côte à côte; sinon afficher la seule image.
+        if len(pixmaps) == 1:
+            pix = pixmaps[0].scaledToWidth(360, Qt.SmoothTransformation)
+        else:
+            target_height = 360
+            scaled = [p.scaledToHeight(target_height, Qt.SmoothTransformation) for p in pixmaps[:2]]
+            total_width = sum(p.width() for p in scaled)
+            pix = QPixmap(total_width, target_height)
+            pix.fill(Qt.transparent)
+            painter = QPainter(pix)
+            x = 0
+            for p in scaled:
+                painter.drawPixmap(x, 0, p)
+                x += p.width()
+            painter.end()
+
+        if self.preview_label:
+            self.preview_label.setPixmap(pix)
 
     def filter_deck_list(self, text: str):
         """Sélectionne la première carte correspondant au filtre et scroll."""

@@ -2,3 +2,4 @@ env/
 data/collection.db
 data/ManaBox_Collection.csv
 data/oracle-cards.json
+build/
