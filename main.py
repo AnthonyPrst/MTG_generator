@@ -38,6 +38,7 @@ class Launcher(object):
         # Initialisation des composants
         self.collection_manager = CollectionManager()
         self.external_provider = ExternalDataProvider()
+        self.excluded_card_names: set[str] = set()
 
     def import_collection(self):
         """Importe une collection depuis un fichier CSV."""
@@ -49,10 +50,14 @@ class Launcher(object):
 
     def update_collection_list(self):
         """Mise à jour de la liste des cartes dans la fenêtre."""
-        self.window.collection_list.clear()
         cards = self.collection_manager.get_all_cards()
-        for card in cards:
-            self.window.collection_list.addItem(' / '.join([card["name"], card["colors"], card["types"], str(card["quantity"]), card["set_name"], str(card["collector_number"])]))
+        # Alimente l'onglet avec données + filtres
+        if hasattr(self.window, "set_collection_cards"):
+            self.window.set_collection_cards(cards)
+        else:
+            self.window.collection_list.clear()
+            for card in cards:
+                self.window.collection_list.addItem(' / '.join([card["name"], card["colors"], card["types"], str(card["quantity"]), card["set_name"], str(card["collector_number"])]))
 
     def export_collection(self):
         """Exporte la collection vers un fichier CSV."""
@@ -82,7 +87,9 @@ class Launcher(object):
         """Importe une collection depuis un fichier CSV."""
         commander_name = self.window.commander_input.currentText()
         order_by = self.window.order_by.currentText() 
-        self.window.deck_found_list.clear()
+        # Nettoyer le tableau des cartes éventuelles
+        if hasattr(self.window, "deck_found_table"):
+            self.window.deck_found_table.setRowCount(0)
         deck_search_params = self.window.numb_deck_search.currentIndex()
 
         decks_id = self.external_provider.get_archidekt_decks_id_for_commander(commander_name, order_by)
@@ -113,32 +120,25 @@ class Launcher(object):
             self.window.close_progress()
 
         owned = self.collection_manager.compare_deck_to_collection(cards)
+        owned = self._apply_exclusions(owned)
         self.eventual_owned = sorted(owned, key=lambda d: d['types'])
         cts.EVENTUAL_SCRYFALL_ID_LIST = []
         for card in self.eventual_owned:
             cts.EVENTUAL_SCRYFALL_ID_LIST.append(card["scryfall_id"])
-            list_items = [
-                card["name"], 
-                card["colors"],
-                card["types"],
-                str(card["edhrec_rank"]),
-                str(card["occurence"]),
-                card["defaultCategory"]
-            ]
-            str_items = ' / '.join(list_items)
-            self.window.deck_found_list.addItem(str_items)
+        # Alimenter le tableau avec la nouvelle API
+        if hasattr(self.window, "set_eventual_cards"):
+            self.window.set_eventual_cards(self.eventual_owned)
         self.window.set_length_of_eventual_list(len(owned), len_decks, numbers_decks)
 
     def build_deck(self):
         """Construit un deck Commander valide à partir d'une liste scorée."""
         commander_name = self.window.commander_input.currentText()
-        deck_builder = DeckBuilder(self, commander_name, self.eventual_owned)
+        deck_builder = DeckBuilder(self, commander_name, self._apply_exclusions(self.eventual_owned))
         self.window.show_progress("Construction du deck", "Génération en cours...", maximum=0)
         try:
             deck = deck_builder.build_deck()
         finally:
             self.window.close_progress()
-        self.window.deck_list.clear()
         cards = sorted(deck.cards, key=lambda d: d['types'])
         commander_first = [c for c in cards if c["name"] == commander_name]
         non_commander = [c for c in cards if c["name"] != commander_name]
@@ -146,17 +146,11 @@ class Launcher(object):
         summary = self._summarize_deck(cards)
         sum_score = 0
         for card in cards:
-            list_items = [
-                card["name"], 
-                card["types"],
-                card["role"],
-                str(card["score"])
-            ]
-            str_items = ' / '.join(list_items)
-            self.window.deck_list.addItem(str_items)
             sum_score += card["score"]
         mean_score = sum_score / len(deck.cards)
         self.window.set_length_and_score_of_deck_list(len(deck.cards), mean_score)
+        if hasattr(self.window, "set_deck_cards"):
+            self.window.set_deck_cards(cards)
         mana_curve_text, stats_text = self._compute_deck_stats(summary)
         self.window.set_deck_stats(mana_curve_text, stats_text)
         mana_curve_pixmap, roles_pixmap = self._compute_deck_graphs(summary)
@@ -164,6 +158,55 @@ class Launcher(object):
 
         # Afficher les images du deck (3 par ligne)
         self.window.show_deck_images(cards, self.external_provider)
+
+    def load_exclusion_list(self):
+        """Charge un fichier texte listant les cartes à exclure si non possédées en double."""
+        file_path = self.window.get_open_file_name("Sélectionner un fichier texte d'exclusion", "TXT files (*.txt)")
+        if not file_path:
+            return
+        names = set()
+        try:
+            with open(file_path, encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    lower = line.lower()
+                    if lower.startswith("commander") or lower.startswith("deck"):
+                        continue
+                    # Supprime un éventuel préfixe de quantité ("1x", "2 x", etc.)
+                    if "x" in line[:4]:
+                        parts = line.split("x", 1)
+                        candidate = parts[1] if len(parts) > 1 else line
+                    else:
+                        candidate = line
+                    # Retire les informations de set entre parenthèses
+                    candidate = candidate.split("(")[0].strip()
+                    if candidate:
+                        names.add(candidate.lower())
+            self.excluded_card_names = names
+            self.window.statusBar().showMessage(f"{len(names)} cartes d'exclusion chargées", 5000)
+        except Exception as exc:
+            self.window.statusBar().showMessage("Erreur lors du chargement du fichier d'exclusion", 5000)
+            raise exc
+
+    def _apply_exclusions(self, cards: list[dict]) -> list[dict]:
+        """Filtre les cartes à exclure si non possédées en double."""
+        if not getattr(self, "excluded_card_names", None):
+            return cards
+        excluded = self.excluded_card_names
+        filtered: list[dict] = []
+        skipped = 0
+        for card in cards:
+            name_lower = card.get("name", "").lower()
+            owned_qty = card.get("owned", 0)
+            if name_lower in excluded and owned_qty < 2:
+                skipped += 1
+                continue
+            filtered.append(card)
+        if skipped:
+            self.window.statusBar().showMessage(f"{skipped} cartes exclues (pas de doublon)", 5000)
+        return filtered
 
     def _summarize_deck(self, cards: list[dict]) -> dict:
         """Retourne un résumé commun pour courbe de mana et stats rôles."""

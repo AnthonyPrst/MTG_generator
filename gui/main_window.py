@@ -2,6 +2,7 @@ from functools import partial
 from pathlib import Path
 import time
 import requests
+from typing import Optional, List, Dict
 from PySide6.QtWidgets import (
     QApplication,
     QInputDialog,
@@ -24,6 +25,11 @@ from PySide6.QtWidgets import (
     QGridLayout,
     QProgressDialog,
     QSizePolicy,
+    QMenu,
+    QDialog,
+    QTableWidget,
+    QTableWidgetItem,
+    QHeaderView,
 )
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QPixmap, QPainter
@@ -42,6 +48,12 @@ class MainWindow(QMainWindow):
         self.missing_image_indices = []
         self.preview_label = None
         self.roles_available = set()
+        self.collection_cards = []
+        self.filtered_collection_cards: List[Dict] = []
+        self.eventual_cards_data: List[Dict] = []
+        self.filtered_eventual_cards: List[Dict] = []
+        self.deck_cards_data: List[Dict] = []
+        self.filtered_deck_cards: List[Dict] = []
         
         # Widget central
         self.central_widget = QWidget()
@@ -101,34 +113,64 @@ class MainWindow(QMainWindow):
         
         # Liste des cartes trouvées
         self.label_deck_found_list = QLabel("Liste des cartes éventuelles:")
-        self.deck_found_list = QListWidget()
-        self.deck_found_list.setAlternatingRowColors(True)
+        self.deck_found_table = QTableWidget()
+        self.deck_found_table.setColumnCount(6)
+        self.deck_found_table.setHorizontalHeaderLabels([
+            "Nom",
+            "Couleurs",
+            "Types",
+            "Rank",
+            "Occurrences",
+            "Catégorie",
+        ])
+        header_found = self.deck_found_table.horizontalHeader()
+        header_found.setSectionResizeMode(QHeaderView.Stretch)
+        header_found.setSectionResizeMode(3, QHeaderView.ResizeToContents)
+        header_found.setSectionResizeMode(4, QHeaderView.ResizeToContents)
+        self.deck_found_table.setAlternatingRowColors(True)
+        self.deck_found_table.setSelectionBehavior(self.deck_found_table.SelectionBehavior.SelectRows)
+        self.deck_found_table.setEditTriggers(self.deck_found_table.EditTrigger.NoEditTriggers)
+        self.deck_found_table.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.deck_found_table.customContextMenuRequested.connect(lambda pos: self.show_card_context_menu(pos, source="eventual"))
         self.export_deck_found_list = QPushButton("Exporter la listes des cartes éventuelles")
+        self.load_exclusion_btn = QPushButton("Charger un fichier d'exclusion")
         # Liste des cartes du deck
         self.label_deck_list = QLabel("Deck:")
-        self.deck_list = QListWidget()
-        self.deck_list.setAlternatingRowColors(True)
+        self.deck_table = QTableWidget()
+        self.deck_table.setColumnCount(4)
+        self.deck_table.setHorizontalHeaderLabels([
+            "Nom",
+            "Types",
+            "Rôle",
+            "Score",
+        ])
+        header_deck = self.deck_table.horizontalHeader()
+        header_deck.setSectionResizeMode(QHeaderView.Stretch)
+        header_deck.setSectionResizeMode(3, QHeaderView.ResizeToContents)
+        self.deck_table.setAlternatingRowColors(True)
+        self.deck_table.setSelectionBehavior(self.deck_table.SelectionBehavior.SelectRows)
+        self.deck_table.setEditTriggers(self.deck_table.EditTrigger.NoEditTriggers)
+        self.deck_table.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.deck_table.customContextMenuRequested.connect(lambda pos: self.show_card_context_menu(pos, source="deck"))
         self.export_deck_list = QPushButton("Exporter la listes des cartes du deck")
         self.export_deck_list.setMinimumHeight(40)
-        self.deck_list.itemClicked.connect(self.scroll_to_selected_image)
-        self.deck_list.itemSelectionChanged.connect(self.update_preview_from_selection)
         self.deck_search = QLineEdit()
         self.deck_search.setPlaceholderText("Rechercher une carte dans le deck...")
         self.deck_search.textChanged.connect(self.filter_deck_list)
-        self.reload_missing_btn = QPushButton("Recharger les images manquantes")
-        self.reload_missing_btn.clicked.connect(self.reload_missing_images)
+        self.deck_table.itemSelectionChanged.connect(self.update_preview_from_selection)
+        self.deck_table.itemSelectionChanged.connect(self.scroll_to_selected_image)
         
         layout1.addLayout(form_layout)
         layout1.addWidget(self.search_commander_btn)
         layout1.addWidget(self.label_deck_found_list)
-        layout1.addWidget(self.deck_found_list)
+        layout1.addWidget(self.deck_found_table)
         layout1.addWidget(self.export_deck_found_list)
+        layout1.addWidget(self.load_exclusion_btn)
         layout1.addWidget(self.build_btn)
         layout1.addWidget(self.label_deck_list)
         layout1.addWidget(self.deck_search)
-        layout1.addWidget(self.deck_list)
+        layout1.addWidget(self.deck_table)
         layout1.addWidget(self.export_deck_list)
-        layout1.addWidget(self.reload_missing_btn)
 
         self.deck_filter_role = QComboBox()
         self.deck_filter_role.addItem("Toutes")
@@ -186,6 +228,7 @@ class MainWindow(QMainWindow):
 
         self.search_commander_btn.clicked.connect(self.app.get_decks_archidekt_from_commander)
         self.export_deck_found_list.clicked.connect(self.app.export_eventual_cards_list)
+        self.load_exclusion_btn.clicked.connect(self.app.load_exclusion_list)
         self.build_btn.clicked.connect(self.app.build_deck)
         self.export_deck_list.clicked.connect(self.app.export_deck_list)
 
@@ -341,24 +384,224 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(tab)
         
         # Boutons d'import/export
-        btn_layout = QVBoxLayout()
+        btn_layout = QHBoxLayout()
         self.import_btn = QPushButton("Importer une collection")
         self.export_btn = QPushButton("Exporter la collection")
+        self.clear_filters_btn = QPushButton("Réinitialiser les filtres")
         btn_layout.addWidget(self.import_btn)
         btn_layout.addWidget(self.export_btn)
+        btn_layout.addStretch()
+        btn_layout.addWidget(self.clear_filters_btn)
         
-        # Liste de la collection
+        # Tableau de la collection
         self.label_collection = QLabel("Nom / Couleur / Type / Quantité / Nom du set / Numéro de la carte")
-        self.collection_list = QListWidget()
+        self.collection_table = QTableWidget()
+        self.collection_table.setColumnCount(6)
+        self.collection_table.setHorizontalHeaderLabels([
+            "Nom",
+            "Couleurs",
+            "Types",
+            "Qté",
+            "Set",
+            "Numéro",
+        ])
+        header = self.collection_table.horizontalHeader()
+        header.setSectionResizeMode(QHeaderView.Stretch)
+        header.setSectionResizeMode(3, QHeaderView.ResizeToContents)
+        self.collection_table.setAlternatingRowColors(True)
+        self.collection_table.setSelectionBehavior(self.collection_table.SelectionBehavior.SelectRows)
+        self.collection_table.setEditTriggers(self.collection_table.EditTrigger.NoEditTriggers)
+        self.collection_table.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.collection_table.customContextMenuRequested.connect(self.show_collection_context_menu)
+
+        # Recherche et filtres
+        filters_row = QHBoxLayout()
+        self.collection_search = QLineEdit()
+        self.collection_search.setPlaceholderText("Rechercher par nom, set ou numéro...")
+        self.collection_color_filter = QComboBox()
+        self.collection_color_filter.addItem("Toutes les couleurs")
+        self.collection_type_filter = QComboBox()
+        self.collection_type_filter.addItem("Tous les types")
+        filters_row.addWidget(QLabel("Recherche:"))
+        filters_row.addWidget(self.collection_search)
+        filters_row.addWidget(QLabel("Couleur:"))
+        filters_row.addWidget(self.collection_color_filter)
+        filters_row.addWidget(QLabel("Type:"))
+        filters_row.addWidget(self.collection_type_filter)
+        
+        self.collection_summary = QLabel("")
+        self.collection_summary.setObjectName("statsTitle")
         
         layout.addLayout(btn_layout)
+        layout.addLayout(filters_row)
+        layout.addWidget(self.collection_summary)
         layout.addWidget(self.label_collection)
-        layout.addWidget(self.collection_list)
+        layout.addWidget(self.collection_table)
 
         self.import_btn.clicked.connect(self.app.import_collection)
         self.export_btn.clicked.connect(self.app.export_collection)
+        self.collection_search.textChanged.connect(self.refresh_collection_list)
+        self.collection_color_filter.currentTextChanged.connect(self.refresh_collection_list)
+        self.collection_type_filter.currentTextChanged.connect(self.refresh_collection_list)
+        self.clear_filters_btn.clicked.connect(self.clear_collection_filters)
         
         self.tabs.addTab(tab, "Ma Collection")
+
+    # --- Collection helpers ---
+    def set_collection_cards(self, cards: List[Dict]):
+        """Réceptionne les cartes et (re)charge filtres + liste."""
+        self.collection_cards = cards or []
+        self._update_collection_filters()
+        self.refresh_collection_list()
+
+    def _update_collection_filters(self):
+        colors = set()
+        types = set()
+        for card in self.collection_cards:
+            colors_field = str(card.get("colors", "")).replace("[", "").replace("]", "").replace("'", "")
+            for part in colors_field.split(','):
+                val = part.strip()
+                if val:
+                    colors.add(val)
+            types_field = card.get("types") or ""
+            main_type = types_field.split(" — ")[0].strip()
+            if main_type:
+                types.add(main_type)
+
+        self.collection_color_filter.blockSignals(True)
+        self.collection_color_filter.clear()
+        self.collection_color_filter.addItem("Toutes les couleurs")
+        for c in sorted(colors):
+            self.collection_color_filter.addItem(c)
+        self.collection_color_filter.blockSignals(False)
+
+        self.collection_type_filter.blockSignals(True)
+        self.collection_type_filter.clear()
+        self.collection_type_filter.addItem("Tous les types")
+        for t in sorted(types):
+            self.collection_type_filter.addItem(t)
+        self.collection_type_filter.blockSignals(False)
+
+    def refresh_collection_list(self):
+        """Applique recherche/filtre et met à jour la liste + résumé."""
+        query = self.collection_search.text().strip().lower() if hasattr(self, "collection_search") else ""
+        color_filter = self.collection_color_filter.currentText() if hasattr(self, "collection_color_filter") else "Toutes les couleurs"
+        type_filter = self.collection_type_filter.currentText() if hasattr(self, "collection_type_filter") else "Tous les types"
+
+        self.collection_table.setRowCount(0)
+        filtered_cards: List[Dict] = []
+        total_qty = 0
+
+        for card in self.collection_cards:
+            name = card.get("name", "")
+            set_name = card.get("set_name", "")
+            collector_number = str(card.get("collector_number", ""))
+            colors_field = str(card.get("colors", "")).replace("[", "").replace("]", "").replace("'", "")
+            types_field = card.get("types", "")
+
+            if query:
+                target = " ".join([name, set_name, collector_number]).lower()
+                if query not in target:
+                    continue
+
+            if color_filter != "Toutes les couleurs":
+                color_tokens = {c.strip() for c in colors_field.split(',') if c.strip()}
+                if color_filter not in color_tokens:
+                    continue
+
+            if type_filter != "Tous les types":
+                if type_filter.lower() not in types_field.lower():
+                    continue
+
+            filtered_cards.append(card)
+            total_qty += int(card.get("quantity", 0) or 0)
+
+        self.filtered_collection_cards = filtered_cards
+
+        self.collection_table.setRowCount(len(filtered_cards))
+        for row, card in enumerate(filtered_cards):
+            name = card.get("name", "")
+            colors_field = str(card.get("colors", "")).replace("[", "").replace("]", "").replace("'", "")
+            types_field = card.get("types", "") or "-"
+            qty = str(card.get("quantity", 0))
+            set_name = card.get("set_name", "")
+            collector_number = str(card.get("collector_number", ""))
+
+            for col, value in enumerate([
+                name,
+                colors_field or "-",
+                types_field,
+                qty,
+                set_name,
+                collector_number,
+            ]):
+                item = QTableWidgetItem(value)
+                if col == 3:
+                    item.setTextAlignment(Qt.AlignCenter)
+                self.collection_table.setItem(row, col, item)
+
+        unique_total = len(self.collection_cards)
+        filtered_total = len(filtered_cards)
+        summary_text = f"{filtered_total} cartes filtrées sur {unique_total} ( {total_qty} exemplaires )"
+        self.collection_summary.setText(summary_text)
+
+    def clear_collection_filters(self):
+        """Réinitialise recherche et filtres collection."""
+        self.collection_search.clear()
+        self.collection_color_filter.setCurrentIndex(0)
+        self.collection_type_filter.setCurrentIndex(0)
+        self.refresh_collection_list()
+
+    def show_collection_context_menu(self, pos):
+        """Affiche un menu contextuel sur la liste des cartes."""
+        row = self.collection_table.rowAt(pos.y())
+        if row < 0 or row >= len(self.filtered_collection_cards):
+            return
+        menu = QMenu(self)
+        action_open = menu.addAction("Ouvrir l'image de la carte")
+        action = menu.exec_(self.collection_table.mapToGlobal(pos))
+        if action == action_open:
+            card = self.filtered_collection_cards[row]
+            self.open_card_image_dialog(card)
+
+    def open_card_image_dialog(self, card: Dict):
+        """Ouvre une fenêtre avec l'image de la carte (via image_url ou Scryfall)."""
+        if not card:
+            return
+
+        url = card.get("image_url")
+        if not url:
+            scryfall_id = card.get("scryfall_id")
+            if scryfall_id and hasattr(self.app, "external_provider"):
+                try:
+                    url = self.app.external_provider.get_image_url_from_scryfall(scryfall_id)
+                except Exception:
+                    url = None
+        if not url:
+            self.show_error("Aucune image disponible pour cette carte.")
+            return
+
+        try:
+            resp = requests.get(url)
+            resp.raise_for_status()
+            pix = QPixmap()
+            pix.loadFromData(resp.content)
+        except Exception:
+            self.show_error("Impossible de charger l'image de la carte.")
+            return
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle(card.get("name", "Carte"))
+        vbox = QVBoxLayout(dlg)
+        img_label = QLabel()
+        img_label.setAlignment(Qt.AlignCenter)
+        if not pix.isNull():
+            img_label.setPixmap(pix.scaledToWidth(480, Qt.SmoothTransformation))
+        else:
+            img_label.setText("Image indisponible")
+        vbox.addWidget(img_label)
+        dlg.resize(520, 720)
+        dlg.exec()
     
     def setup_settings_tab(self):
         """Configure l'onglet des paramètres."""
@@ -486,9 +729,9 @@ class MainWindow(QMainWindow):
         progress.setValue(total)
         self.apply_role_filter(self.deck_filter_role.currentText())
 
-    def scroll_to_selected_image(self, item):
-        """Scroll jusqu'à l'image correspondant à l'item sélectionné dans la liste du deck."""
-        row_index = self.deck_list.row(item)
+    def scroll_to_selected_image(self):
+        """Scroll jusqu'à l'image correspondant à la sélection du deck."""
+        row_index = self.deck_table.currentRow()
         widget = self.card_index_to_widget.get(row_index)
         if widget:
             self.deck_images_area.ensureWidgetVisible(widget, 20, 20)
@@ -497,7 +740,7 @@ class MainWindow(QMainWindow):
         """Met à jour l'aperçu grande image selon la sélection dans la liste."""
         if not self.preview_label:
             return
-        row_index = self.deck_list.currentRow()
+        row_index = self.deck_table.currentRow()
         pix = self.card_index_to_pixmap.get(row_index)
         if pix:
             self.preview_label.setPixmap(pix.scaledToWidth(360, Qt.SmoothTransformation))
@@ -587,36 +830,47 @@ class MainWindow(QMainWindow):
             self.preview_label.setPixmap(pix)
 
     def filter_deck_list(self, text: str):
-        """Sélectionne la première carte correspondant au filtre et scroll."""
+        """Sélectionne la première carte correspondant au filtre et scroll (tableau deck)."""
         text = text.strip().lower()
         if not text:
-            if self.deck_list.count():
-                self.deck_list.setCurrentRow(0)
+            if self.deck_table.rowCount():
+                self.deck_table.setCurrentCell(0, 0)
+                self.scroll_to_selected_image()
             return
-        for i in range(self.deck_list.count()):
-            item = self.deck_list.item(i)
-            if text in item.text().lower():
-                self.deck_list.setCurrentItem(item)
-                self.scroll_to_selected_image(item)
+        for i in range(self.deck_table.rowCount()):
+            if self.deck_table.isRowHidden(i):
+                continue
+            row_text = " ".join([
+                self.deck_table.item(i, c).text() if self.deck_table.item(i, c) else ""
+                for c in range(self.deck_table.columnCount())
+            ]).lower()
+            if text in row_text:
+                self.deck_table.setCurrentCell(i, 0)
+                self.scroll_to_selected_image()
                 break
 
     def apply_role_filter(self, role: str):
-        """Filtre les images par rôle (Ramp, Draw, Removal, etc.)."""
+        """Filtre les images et lignes par rôle (Ramp, Draw, Removal, etc.)."""
         if role == "Toutes" or not self.cards_data:
-            for idx in range(self.deck_list.count()):
-                self.deck_list.item(idx).setHidden(False)
+            for idx in range(self.deck_table.rowCount()):
+                self.deck_table.setRowHidden(idx, False)
                 widget = self.card_index_to_widget.get(idx)
                 if widget:
                     widget.setVisible(True)
+            self.filtered_deck_cards = list(self.cards_data)
             return
         role_lower = role.lower()
+        visible_cards = []
         for idx, card in enumerate(self.cards_data):
-            item = self.deck_list.item(idx)
             item_role = str(card.get("role", "")).lower()
-            item.setHidden(role_lower not in item_role)
+            keep = role_lower in item_role
+            self.deck_table.setRowHidden(idx, not keep)
             widget = self.card_index_to_widget.get(idx)
             if widget:
-                widget.setVisible(role_lower in item_role)
+                widget.setVisible(keep)
+            if keep:
+                visible_cards.append(card)
+        self.filtered_deck_cards = visible_cards
 
     def update_role_filter_options(self):
         """Met à jour la liste des rôles disponibles dans le filtre."""
@@ -633,51 +887,6 @@ class MainWindow(QMainWindow):
         else:
             self.deck_filter_role.setCurrentIndex(0)
         self.deck_filter_role.blockSignals(False)
-
-    def reload_missing_images(self):
-        """Recharge uniquement les images manquantes."""
-        if not self.missing_image_indices:
-            self.show_info("Aucune image manquante à recharger.")
-            return
-        if not self.cards_data:
-            return
-        col_count = 3
-        external_provider = self.app.external_provider
-        still_missing = []
-        for idx in list(self.missing_image_indices):
-            card = self.cards_data[idx]
-            url = card.get("image_url")
-            if not url:
-                scryfall_id = card.get("scryfall_id")
-                url = external_provider.get_image_url_from_scryfall(scryfall_id)
-            if not url:
-                still_missing.append(idx)
-                continue
-            try:
-                time.sleep(0.075)
-                resp = requests.get(url)
-                resp.raise_for_status()
-                pix = QPixmap()
-                pix.loadFromData(resp.content)
-            except Exception:
-                still_missing.append(idx)
-                continue
-
-            row = idx // col_count
-            col = idx % col_count
-            label = self.card_index_to_widget.get(idx)
-            if label is None:
-                label = QLabel()
-                self.deck_images_grid.addWidget(label, row, col)
-                self.card_index_to_widget[idx] = label
-            label.setPixmap(pix.scaledToWidth(240, Qt.SmoothTransformation))
-            self.card_index_to_pixmap[idx] = pix
-
-        self.missing_image_indices = still_missing
-        if still_missing:
-            self.show_info(f"Images restantes manquantes : {len(still_missing)}")
-        else:
-            self.show_info("Toutes les images manquantes ont été rechargées.")
 
     def show_error(self, message):
         """Affiche un message d'erreur."""
@@ -722,3 +931,69 @@ class MainWindow(QMainWindow):
 
     def set_length_and_score_of_deck_list(self, length: int, mean_score: float):
         self.label_deck_list.setText(f"Deck ({length} cartes) avec un score moyen de {mean_score:.2f}")
+
+    # --- Construction tab helpers ---
+    def set_eventual_cards(self, cards: List[Dict]):
+        """Alimente le tableau des cartes éventuelles."""
+        self.eventual_cards_data = cards or []
+        self.filtered_eventual_cards = self.eventual_cards_data
+        self.deck_found_table.setRowCount(len(self.filtered_eventual_cards))
+        for row, card in enumerate(self.filtered_eventual_cards):
+            values = [
+                card.get("name", ""),
+                str(card.get("colors", "")).replace("[", "").replace("]", "").replace("'", ""),
+                card.get("types", ""),
+                str(card.get("edhrec_rank", "")),
+                str(card.get("occurence", "")),
+                str(card.get("defaultCategory", "")),
+            ]
+            for col, val in enumerate(values):
+                item = QTableWidgetItem(val)
+                if col in (3, 4):
+                    item.setTextAlignment(Qt.AlignCenter)
+                self.deck_found_table.setItem(row, col, item)
+
+    def set_deck_cards(self, cards: List[Dict]):
+        """Alimente le tableau du deck et conserve l'ordre pour images/filtre."""
+        self.deck_cards_data = cards or []
+        self.cards_data = self.deck_cards_data  # utilisé par apply_role_filter
+        self.filtered_deck_cards = self.deck_cards_data
+        self.deck_table.setRowCount(len(self.deck_cards_data))
+        for row, card in enumerate(self.deck_cards_data):
+            values = [
+                card.get("name", ""),
+                card.get("types", "") or "-",
+                card.get("role", "") or "-",
+                f"{float(card.get('score', 0)):.2f}",
+            ]
+            for col, val in enumerate(values):
+                item = QTableWidgetItem(val)
+                if col == 3:
+                    item.setTextAlignment(Qt.AlignCenter)
+                self.deck_table.setItem(row, col, item)
+        # reset role filter to all
+        self.deck_filter_role.blockSignals(True)
+        self.deck_filter_role.setCurrentIndex(0)
+        self.deck_filter_role.blockSignals(False)
+        self.apply_role_filter(self.deck_filter_role.currentText())
+
+    def show_card_context_menu(self, pos, source: str = "deck"):
+        """Menu contextuel pour ouvrir l'image (deck ou éventuelles)."""
+        if source == "deck":
+            row = self.deck_table.rowAt(pos.y())
+            target_cards = self.deck_cards_data
+            table = self.deck_table
+        elif source == "eventual":
+            row = self.deck_found_table.rowAt(pos.y())
+            target_cards = self.filtered_eventual_cards
+            table = self.deck_found_table
+        else:
+            return
+        if row is None or row < 0 or row >= len(target_cards):
+            return
+        menu = QMenu(self)
+        action_open = menu.addAction("Ouvrir l'image de la carte")
+        action = menu.exec_(table.mapToGlobal(pos))
+        if action == action_open:
+            card = target_cards[row]
+            self.open_card_image_dialog(card)
