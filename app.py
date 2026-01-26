@@ -165,11 +165,13 @@ class Launcher(object):
         """Construit un deck Commander valide à partir d'une liste scorée."""
         commander_name = self.window.commander_input.currentText()
         deck_builder = DeckBuilder(self, commander_name, self._apply_exclusions(self.eventual_owned))
-        self.window.show_progress("Construction du deck", "Génération en cours...", maximum=0)
+        self.window.show_progress("Construction du deck", "Génération en cours...", maximum=100)
         try:
             deck = deck_builder.build_deck()
-        finally:
+        except Exception as e:
             self.window.close_progress()
+            return
+        self.window.update_progress(25)
         cards = sorted(deck.cards, key=lambda d: d['types'])
         commander_first = [c for c in cards if c["name"] == commander_name]
         non_commander = [c for c in cards if c["name"] != commander_name]
@@ -182,10 +184,15 @@ class Launcher(object):
         self.window.set_length_and_score_of_deck_list(len(deck.cards), mean_score)
         if hasattr(self.window, "set_deck_cards"):
             self.window.set_deck_cards(cards)
+        
+        self.window.update_progress(50)
         mana_curve_text, stats_text = self._compute_deck_stats(summary)
         self.window.set_deck_stats(mana_curve_text, stats_text)
+        self.window.update_progress(75)
         mana_curve_pixmap, roles_pixmap = self._compute_deck_graphs(summary)
         self.window.set_deck_graphs(mana_curve_pixmap, roles_pixmap)
+        self.window.update_progress(100)
+        self.window.close_progress()
 
         # Afficher les images du deck (3 par ligne)
         self.window.show_deck_images(cards, self.external_provider)

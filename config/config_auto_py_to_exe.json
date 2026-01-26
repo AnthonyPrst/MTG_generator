@@ -7,7 +7,7 @@
   },
   {
    "optionDest": "filenames",
-   "value": "C:/Users/paris/OneDrive/Documents/Project code/MTG_generator/main.py"
+   "value": "C:/Users/paris/OneDrive/Documents/Project code/MTG_generator/app.py"
   },
   {
    "optionDest": "onefile",
@@ -15,7 +15,11 @@
   },
   {
    "optionDest": "console",
-   "value": true
+   "value": false
+  },
+  {
+   "optionDest": "icon_file",
+   "value": "C:/Users/paris/OneDrive/Documents/Project code/MTG_generator/gui/resource/icons8-boule-de-cristal-magique-100.ico"
   },
   {
    "optionDest": "clean_build",
@@ -60,6 +64,14 @@
   {
    "optionDest": "datas",
    "value": "C:/Users/paris/OneDrive/Documents/Project code/MTG_generator/data;data/"
+  },
+  {
+   "optionDest": "datas",
+   "value": "C:/Users/paris/OneDrive/Documents/Project code/MTG_generator/LICENSE;."
+  },
+  {
+   "optionDest": "datas",
+   "value": "C:/Users/paris/OneDrive/Documents/Project code/MTG_generator/README.md;."
   }
  ],
  "nonPyinstallerOptions": {
