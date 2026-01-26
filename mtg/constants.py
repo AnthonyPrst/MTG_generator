@@ -1,3 +1,4 @@
+VERSION = "1.3.0"
 CSV_PATH = None
 DB_PATH = "data/collection.db"
 SCRYFALL_BULK = "data/oracle-cards.json"

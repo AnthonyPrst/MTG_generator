@@ -125,11 +125,13 @@ class CollectionManager:
             colors = ['colorless'] 
         return oracle_id, image, types, colors
 
-    def _load_csv_into_db(self, import_type: str) -> None:
+    def _load_csv_into_db(self, import_type: str, progress_cb=None, label_cb=None) -> None:
         """Charge les données du CSV dans la base de données SQLite.
         
         Args:
             import_type: Type d'import ('ManaBox - Collection' ou 'Moxfield')
+            progress_cb: Fonction de callback pour mettre à jour la barre de progression
+            label_cb: Fonction de callback pour mettre à jour le label de progression
         """
         with (
             open(self.csv_path, 'r', encoding='utf-8') as csvfile,
@@ -145,6 +147,17 @@ class CollectionManager:
             inserted_count = 0
             
             # Vérifier les colonnes requises
+            total_rows = 0
+            # Compter le nombre de lignes pour le suivi de progression
+            try:
+                total_rows = sum(1 for _ in reader)
+                csvfile.seek(0)
+                reader = csv.DictReader(csvfile)
+            except Exception:
+                total_rows = 0
+
+            current_row = 0
+
             if import_type == "ManaBox - Collection":
                 required_columns = {'Name', 'Set code', 'Set name', 'Collector number', 
                                     'Foil', 'Rarity', 'Quantity', 'Scryfall ID', 'Condition', 'Language'}
@@ -155,6 +168,9 @@ class CollectionManager:
                 
                 # Insérer uniquement les nouvelles données
                 for row in reader:
+                    current_row += 1
+                    if label_cb:
+                        label_cb(f"Import ManaBox ({current_row}/{total_rows or '?'})")
                     scryfall_id = row.get('Scryfall ID', '').strip()
                     key = (row['Name'].strip().lower(), scryfall_id)
                     if key in existing_cards:
@@ -183,6 +199,8 @@ class CollectionManager:
                     ))
                     inserted_count += cursor.rowcount
                     existing_cards.add(key)
+                    if progress_cb and total_rows:
+                        progress_cb(current_row)
                 
             elif import_type == "Moxfield":
                 required_columns = {'name', 'scryfall_id', 'colors', 'types', 'quantity'}
@@ -190,6 +208,9 @@ class CollectionManager:
                     raise ValueError(f"Le fichier Moxfield doit contenir les colonnes : {required_columns}")
                 
                 for row in reader:
+                    current_row += 1
+                    if label_cb:
+                        label_cb(f"Import Moxfield ({current_row}/{total_rows or '?'})")
                     scryfall_id = row.get('scryfall_id', '').strip()
                     key = (row['name'].strip().lower(), scryfall_id)
                     if key in existing_cards:
@@ -207,6 +228,8 @@ class CollectionManager:
                     ))
                     inserted_count += cursor.rowcount
                     existing_cards.add(key)
+                    if progress_cb and total_rows:
+                        progress_cb(current_row)
             else:
                 raise ValueError(f"Type d'import non supporté : {import_type}")
             
@@ -306,13 +329,24 @@ class CollectionManager:
             cursor.execute("""
                 SELECT * FROM cards 
                 WHERE LOWER(types) LIKE '%legendary%' 
-                AND LOWER(types) LIKE '%creature%'
+                  AND LOWER(types) LIKE '%creature%'
                 ORDER BY name
             """)
+            rows = cursor.fetchall()
+            seen = set()
+            unique_rows = []
+            for row in rows:
+                name = row['name']
+                key = name.lower().strip()
+                if key in seen:
+                    continue
+                seen.add(key)
+                unique_rows.append(dict(row))
+
             if get_all:
-                return [dict(row) for row in cursor.fetchall()]
+                return unique_rows
             else:
-                return [row['name'] for row in cursor.fetchall()]
+                return [row['name'] for row in unique_rows]
 
     def get_card_quantity(self, name: str) -> int:
         """Récupère la quantité d'une carte dans la collection.
@@ -442,13 +476,20 @@ class CollectionManager:
             logger.error(f"Erreur lors de l'export TXT : {str(e)}")
             raise
 
+    def clear_all_cards(self) -> None:
+        """Supprime toutes les cartes de la collection."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM cards")
+            conn.commit()
+
     def __del__(self):
         """Ferme la connexion à la base de données lors de la destruction de l'instance."""
         if hasattr(self, 'conn'):
             self.conn.close()
 
     # Méthodes de compatibilité avec l'ancienne interface
-    def load_from_csv(self, csv_path: str, import_type: str) -> bool:
+    def load_from_csv(self, csv_path: str, import_type: str, progress_cb=None, label_cb=None) -> bool:
         """Charge la collection depuis un fichier CSV (compatibilité).
         
         Args:
@@ -460,7 +501,7 @@ class CollectionManager:
         # try:
         cts.CSV_PATH = csv_path
         self.csv_path = Path(csv_path)
-        self._load_csv_into_db(import_type)
+        self._load_csv_into_db(import_type, progress_cb, label_cb)
         return True
         # except Exception as e:
         #     logger.error(f"Erreur lors du chargement du CSV : {str(e)}")

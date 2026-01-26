@@ -32,7 +32,8 @@ from PySide6.QtWidgets import (
     QHeaderView,
 )
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QPixmap, QPainter
+from PySide6.QtGui import QPixmap, QPainter, QIcon
+from mtg.constants import VERSION
 
 class MainWindow(QMainWindow):
     """Fenêtre principale de l'application."""
@@ -40,7 +41,8 @@ class MainWindow(QMainWindow):
     def __init__(self, app):
         super().__init__()
         self.app = app
-        self.setWindowTitle("MTG Commander Deck Builder")
+        self.setWindowTitle(f"MTG Commander Deck Builder - Version {VERSION}")
+        self.setWindowIcon(QIcon("C:\\Users\\paris\\OneDrive\\Documents\\Project code\\MTG_generator\\gui\\resource\\icons8-boule-de-cristal-magique-100.png"))
         self.setMinimumSize(1980, 1200)
         self.card_index_to_widget = {}
         self.card_index_to_pixmap = {}
@@ -54,6 +56,105 @@ class MainWindow(QMainWindow):
         self.filtered_eventual_cards: List[Dict] = []
         self.deck_cards_data: List[Dict] = []
         self.filtered_deck_cards: List[Dict] = []
+        self.language = "fr"
+        self.translations = {
+            "fr": {
+                "window_title": "MTG Commander Deck Builder",
+                "tab_build": "Construction",
+                "tab_collection": "Ma Collection",
+                "tab_settings": "Paramètres",
+                "commander_placeholder": "Nom du commandant...",
+                "btn_search_commander": "Rechercher",
+                "btn_build": "Construire le deck",
+                "label_deck_found": "Liste des cartes éventuelles:",
+                "btn_export_eventual": "Exporter la listes des cartes éventuelles",
+                "btn_load_exclusion": "Charger un fichier d'exclusion",
+                "label_deck": "Deck:",
+                "btn_export_deck": "Exporter la listes des cartes du deck",
+                "deck_search_placeholder": "Rechercher une carte dans le deck...",
+                "role_all": "Toutes",
+                "stats_curve": "Courbe de mana",
+                "stats_title": "Statistiques",
+                "collection_tab_title": "Ma Collection",
+                "collection_label": "Nom / Couleur / Type / Quantité / Nom du set / Numéro de la carte",
+                "btn_import": "Importer une collection",
+                "btn_export": "Exporter la collection",
+                "btn_delete": "Supprimer la collection",
+                "btn_reset_filters": "Réinitialiser les filtres",
+                "collection_search_placeholder": "Rechercher par nom, set ou numéro...",
+                "collection_color_all": "Toutes les couleurs",
+                "collection_type_all": "Tous les types",
+                "settings_tab_title": "Paramètres",
+                "language_label": "Langue de l'interface:",
+                "lang_fr": "Français",
+                "lang_en": "English",
+                "export_format_label": "Format d'export:",
+                "export_format_items": ["TXT", "CSV", "Archidekt"],
+                "numb_deck_search_label": "Nombre de decks à rechercher sur Archideckt:",
+                "numb_deck_search_items": ["Faible", "Moyen", "Élevé"],
+                "order_by_label": "Filtrer les decks provenant d'Archidekt par:",
+                "order_by_items": ["Vues", "Mise à jour"],
+                "numb_min_land_label": "Nombre minimum de terrains:",
+                "numb_max_land_label": "Nombre maximum de terrains:",
+                "numb_ramp_label": "Nombre de ramp:",
+                "numb_draw_label": "Nombre de draw:",
+                "numb_removal_label": "Nombre de removal:",
+                "numb_boardwipe_label": "Nombre de boardwipe:",
+                "numb_wincondition_label": "Nombre de wincondition:",
+                "tab_about": "Créateur / Développeur",
+                "about_title": "Créé par : Anthony Parisot",
+                "about_subtitle": f"Version : {VERSION}",
+                "about_contact": "Contact : parisot.a73@outlook.com",
+            },
+            "en": {
+                "window_title": "MTG Commander Deck Builder",
+                "tab_build": "Build",
+                "tab_collection": "My Collection",
+                "tab_settings": "Settings",
+                "commander_placeholder": "Commander name...",
+                "btn_search_commander": "Search",
+                "btn_build": "Build deck",
+                "label_deck_found": "Candidate cards:",
+                "btn_export_eventual": "Export candidate list",
+                "btn_load_exclusion": "Load exclusion file",
+                "label_deck": "Deck:",
+                "btn_export_deck": "Export deck list",
+                "deck_search_placeholder": "Search a card in deck...",
+                "role_all": "All",
+                "stats_curve": "Mana curve",
+                "stats_title": "Statistics",
+                "collection_tab_title": "My Collection",
+                "collection_label": "Name / Color / Type / Quantity / Set name / Collector number",
+                "btn_import": "Import collection",
+                "btn_export": "Export collection",
+                "btn_delete": "Delete collection",
+                "btn_reset_filters": "Reset filters",
+                "collection_search_placeholder": "Search by name, set or number...",
+                "collection_color_all": "All colors",
+                "collection_type_all": "All types",
+                "settings_tab_title": "Settings",
+                "language_label": "UI language:",
+                "lang_fr": "French",
+                "lang_en": "English",
+                "export_format_label": "Export format:",
+                "export_format_items": ["TXT", "CSV", "Archidekt"],
+                "numb_deck_search_label": "Number of decks to search on Archidekt:",
+                "numb_deck_search_items": ["Low", "Medium", "High"],
+                "order_by_label": "Filter decks from Archidekt by:",
+                "order_by_items": ["Views", "Updated"],
+                "numb_min_land_label": "Minimum number of lands:",
+                "numb_max_land_label": "Maximum number of lands:",
+                "numb_ramp_label": "Number of ramp:",
+                "numb_draw_label": "Number of draw:",
+                "numb_removal_label": "Number of removal:",
+                "numb_boardwipe_label": "Number of boardwipe:",
+                "numb_wincondition_label": "Number of wincondition:",
+                "tab_about": "Creator / Developer",
+                "about_title": "Created by: Anthony Parisot",
+                "about_subtitle": f"Version : {VERSION}",
+                "about_contact": "Contact: parisot.a73@outlook.com",
+            },
+        }
         
         # Widget central
         self.central_widget = QWidget()
@@ -75,9 +176,13 @@ class MainWindow(QMainWindow):
         
         # Onglet Paramètres
         self.setup_settings_tab()
+
+        # Onglet Créateur / Développeur
+        self.setup_about_tab()
         
         # Barre de statut
         self.statusBar().showMessage("Prêt")
+        self.apply_language(self.language)
     
     def setup_build_tab(self):
         """Configure l'onglet de construction de deck."""
@@ -279,6 +384,14 @@ class MainWindow(QMainWindow):
             self.progress_dialog.setValue(value)
             QApplication.processEvents()
 
+    def set_progress_label(self, text: str):
+        if hasattr(self, "progress_dialog") and self.progress_dialog:
+            self.progress_dialog.setLabelText(text)
+
+    def set_progress_range(self, minimum: int, maximum: int):
+        if hasattr(self, "progress_dialog") and self.progress_dialog:
+            self.progress_dialog.setRange(minimum, maximum)
+
     def close_progress(self):
         if hasattr(self, "progress_dialog") and self.progress_dialog:
             self.progress_dialog.close()
@@ -387,9 +500,11 @@ class MainWindow(QMainWindow):
         btn_layout = QHBoxLayout()
         self.import_btn = QPushButton("Importer une collection")
         self.export_btn = QPushButton("Exporter la collection")
+        self.delete_btn = QPushButton("Supprimer la collection")
         self.clear_filters_btn = QPushButton("Réinitialiser les filtres")
         btn_layout.addWidget(self.import_btn)
         btn_layout.addWidget(self.export_btn)
+        btn_layout.addWidget(self.delete_btn)
         btn_layout.addStretch()
         btn_layout.addWidget(self.clear_filters_btn)
         
@@ -440,6 +555,7 @@ class MainWindow(QMainWindow):
 
         self.import_btn.clicked.connect(self.app.import_collection)
         self.export_btn.clicked.connect(self.app.export_collection)
+        self.delete_btn.clicked.connect(self.app.delete_collection)
         self.collection_search.textChanged.connect(self.refresh_collection_list)
         self.collection_color_filter.currentTextChanged.connect(self.refresh_collection_list)
         self.collection_type_filter.currentTextChanged.connect(self.refresh_collection_list)
@@ -552,6 +668,17 @@ class MainWindow(QMainWindow):
         self.collection_type_filter.setCurrentIndex(0)
         self.refresh_collection_list()
 
+    def confirm_delete_collection(self) -> bool:
+        """Demande confirmation avant suppression complète de la collection."""
+        reply = QMessageBox.question(
+            self,
+            "Supprimer la collection",
+            "Cette action va supprimer toutes les cartes de la collection. Continuer ?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        return reply == QMessageBox.Yes
+
     def show_collection_context_menu(self, pos):
         """Affiche un menu contextuel sur la liste des cartes."""
         row = self.collection_table.rowAt(pos.y())
@@ -619,6 +746,21 @@ class MainWindow(QMainWindow):
         self.order_by.addItems(["Vues", "Mise à jour"])
         self.order_by.setCurrentIndex(0)
 
+        self.language_label = QLabel("Langue de l'interface:")
+        self.language_select = QComboBox()
+        self.language_select.addItems(["Français", "English"])
+
+        self.export_format_label = QLabel("Format d'export:")
+        self.numb_deck_search_label = QLabel("Nombre de decks à rechercher sur Archideckt:")
+        self.order_by_label = QLabel("Filtrer les decks provenant d'Archidekt par:")
+        self.numb_min_land_label = QLabel("Nombre minimum de terrains:")
+        self.numb_max_land_label = QLabel("Nombre maximum de terrains:")
+        self.numb_ramp_label = QLabel("Nombre de ramp:")
+        self.numb_draw_label = QLabel("Nombre de draw:")
+        self.numb_removal_label = QLabel("Nombre de removal:")
+        self.numb_boardwipe_label = QLabel("Nombre de boardwipe:")
+        self.numb_wincondition_label = QLabel("Nombre de wincondition:")
+        
         self.numb_min_land = QSpinBox()
         self.numb_min_land.setRange(10, 50)
         self.numb_min_land.setValue(36)
@@ -646,21 +788,170 @@ class MainWindow(QMainWindow):
         self.numb_wincondition.setRange(1, 20)
         self.numb_wincondition.setValue(6)
 
-        form_layout.addRow("Format d'export:", self.export_format)
-        form_layout.addRow("Nombre de decks à rechercher sur Archideckt:", self.numb_deck_search)
-        form_layout.addRow("Filtrer les decks provenant d'Archidekt par:", self.order_by)
-        form_layout.addRow("Nombre minimum de terrains:", self.numb_min_land)
-        form_layout.addRow("Nombre maximum de terrains:", self.numb_max_land)
-        form_layout.addRow("Nombre de ramp:", self.numb_ramp)
-        form_layout.addRow("Nombre de draw:", self.numb_draw)
-        form_layout.addRow("Nombre de removal:", self.numb_removal)
-        form_layout.addRow("Nombre de boardwipe:", self.numb_boardwipe)
-        form_layout.addRow("Nombre de wincondition:", self.numb_wincondition)
+        form_layout.addRow(self.language_label, self.language_select)
+        form_layout.addRow(self.export_format_label, self.export_format)
+        form_layout.addRow(self.numb_deck_search_label, self.numb_deck_search)
+        form_layout.addRow(self.order_by_label, self.order_by)
+        form_layout.addRow(self.numb_min_land_label, self.numb_min_land)
+        form_layout.addRow(self.numb_max_land_label, self.numb_max_land)
+        form_layout.addRow(self.numb_ramp_label, self.numb_ramp)
+        form_layout.addRow(self.numb_draw_label, self.numb_draw)
+        form_layout.addRow(self.numb_removal_label, self.numb_removal)
+        form_layout.addRow(self.numb_boardwipe_label, self.numb_boardwipe)
+        form_layout.addRow(self.numb_wincondition_label, self.numb_wincondition)
         
         layout.addLayout(form_layout)
         layout.addStretch()
         
         self.tabs.addTab(tab, "Paramètres")
+        self.language_select.currentTextChanged.connect(lambda _: self.app.set_language(self.get_language_code()))
+
+    def setup_about_tab(self):
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        title = QLabel("Créé par : Anthony Parisot")
+        subtitle = QLabel("Version : 1.2.0")
+        contact = QLabel("Contact : anthony.parisot@gmail.com")
+        for lbl in (title, subtitle, contact):
+            lbl.setObjectName("statsTitle")
+            lbl.setWordWrap(True)
+            layout.addWidget(lbl)
+        layout.addStretch()
+        self.about_title_label = title
+        self.about_subtitle_label = subtitle
+        self.about_contact_label = contact
+        self.tabs.addTab(tab, "Créateur / Développeur")
+
+    def get_language_code(self) -> str:
+        text = self.language_select.currentText()
+        if "English" in text:
+            return "en"
+        return "fr"
+
+    def apply_language(self, lang: str):
+        if lang not in self.translations:
+            lang = "fr"
+        self.language = lang
+        t = self.translations[lang]
+
+        # Window & tabs
+        self.setWindowTitle(t["window_title"])
+        self.tabs.setTabText(0, t["tab_build"])
+        self.tabs.setTabText(1, t["tab_collection"])
+        self.tabs.setTabText(2, t["tab_settings"])
+        # about tab (index 3)
+        if self.tabs.count() > 3:
+            self.tabs.setTabText(3, t["tab_about"])
+
+        # Build tab
+        self.commander_input.setPlaceholderText(t["commander_placeholder"])
+        self.search_commander_btn.setText(t["btn_search_commander"])
+        self.build_btn.setText(t["btn_build"])
+        self.label_deck_found_list.setText(t["label_deck_found"])
+        self.export_deck_found_list.setText(t["btn_export_eventual"])
+        self.load_exclusion_btn.setText(t["btn_load_exclusion"])
+        self.label_deck_list.setText(t["label_deck"])
+        self.export_deck_list.setText(t["btn_export_deck"])
+        self.deck_search.setPlaceholderText(t["deck_search_placeholder"])
+
+        # role filter default label
+        current_role = self.deck_filter_role.currentText()
+        self.deck_filter_role.blockSignals(True)
+        self.deck_filter_role.clear()
+        self.deck_filter_role.addItem(t["role_all"])
+        for role in sorted(r for r in self.roles_available if r):
+            self.deck_filter_role.addItem(role)
+        # try to restore selection
+        idx = self.deck_filter_role.findText(current_role)
+        self.deck_filter_role.setCurrentIndex(idx if idx != -1 else 0)
+        self.deck_filter_role.blockSignals(False)
+
+        self.mana_curve_label.setText(t["stats_curve"])
+        self.deck_stats_label.setText(t["stats_title"])
+
+        # Collection tab
+        self.label_collection.setText(t["collection_label"])
+        self.import_btn.setText(t["btn_import"])
+        self.export_btn.setText(t["btn_export"])
+        self.delete_btn.setText(t["btn_delete"])
+        self.clear_filters_btn.setText(t["btn_reset_filters"])
+        self.collection_search.setPlaceholderText(t["collection_search_placeholder"])
+
+        # color/type filters
+        current_color = self.collection_color_filter.currentText()
+        self.collection_color_filter.blockSignals(True)
+        self.collection_color_filter.clear()
+        self.collection_color_filter.addItem(t["collection_color_all"])
+        for c in sorted({
+            part.strip() for card in self.collection_cards for part in str(card.get("colors", "")).replace("[","").replace("]","").replace("'","").split(',') if part.strip()
+        }):
+            self.collection_color_filter.addItem(c)
+        idx_color = self.collection_color_filter.findText(current_color)
+        self.collection_color_filter.setCurrentIndex(idx_color if idx_color != -1 else 0)
+        self.collection_color_filter.blockSignals(False)
+
+        current_type = self.collection_type_filter.currentText()
+        self.collection_type_filter.blockSignals(True)
+        self.collection_type_filter.clear()
+        self.collection_type_filter.addItem(t["collection_type_all"])
+        for typ in sorted({(card.get("types") or "").split(" — ")[0].strip() for card in self.collection_cards if card.get("types") }):
+            if typ:
+                self.collection_type_filter.addItem(typ)
+        idx_type = self.collection_type_filter.findText(current_type)
+        self.collection_type_filter.setCurrentIndex(idx_type if idx_type != -1 else 0)
+        self.collection_type_filter.blockSignals(False)
+
+        # Settings tab (selector + combos)
+        self.language_label.setText(t["language_label"])
+        self.language_select.blockSignals(True)
+        self.language_select.clear()
+        self.language_select.addItems([t["lang_fr"], t["lang_en"]])
+        if lang == "en":
+            self.language_select.setCurrentIndex(1)
+        else:
+            self.language_select.setCurrentIndex(0)
+        self.language_select.blockSignals(False)
+        
+        self.export_format_label.setText(t["export_format_label"])
+        self.numb_deck_search_label.setText(t["numb_deck_search_label"])
+        self.order_by_label.setText(t["order_by_label"])
+        self.numb_min_land_label.setText(t["numb_min_land_label"])
+        self.numb_max_land_label.setText(t["numb_max_land_label"])
+        self.numb_ramp_label.setText(t["numb_ramp_label"])
+        self.numb_draw_label.setText(t["numb_draw_label"])
+        self.numb_removal_label.setText(t["numb_removal_label"])
+        self.numb_boardwipe_label.setText(t["numb_boardwipe_label"])
+        self.numb_wincondition_label.setText(t["numb_wincondition_label"])
+
+        self.export_format.blockSignals(True)
+        current_fmt = self.export_format.currentText()
+        self.export_format.clear()
+        self.export_format.addItems(t["export_format_items"])
+        idx_fmt = self.export_format.findText(current_fmt)
+        self.export_format.setCurrentIndex(idx_fmt if idx_fmt != -1 else 0)
+        self.export_format.blockSignals(False)
+
+        self.numb_deck_search.blockSignals(True)
+        current_search = self.numb_deck_search.currentText()
+        self.numb_deck_search.clear()
+        self.numb_deck_search.addItems(t["numb_deck_search_items"])
+        idx_search = self.numb_deck_search.findText(current_search)
+        self.numb_deck_search.setCurrentIndex(idx_search if idx_search != -1 else 0)
+        self.numb_deck_search.blockSignals(False)
+
+        self.order_by.blockSignals(True)
+        current_order = self.order_by.currentText()
+        self.order_by.clear()
+        self.order_by.addItems(t["order_by_items"])
+        idx_order = self.order_by.findText(current_order)
+        self.order_by.setCurrentIndex(idx_order if idx_order != -1 else 0)
+        self.order_by.blockSignals(False)
+
+        # About tab labels
+        if hasattr(self, "about_title_label"):
+            self.about_title_label.setText(t["about_title"])
+            self.about_subtitle_label.setText(t["about_subtitle"])
+            self.about_contact_label.setText(t["about_contact"])
     
     def clear_deck_images(self):
         """Supprime les vignettes précédentes du deck."""

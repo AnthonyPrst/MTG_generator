@@ -5,6 +5,7 @@ import argparse
 import time
 from pathlib import Path
 from PySide6.QtWidgets import QApplication
+from PySide6.QtGui import QIcon
 
 from mtg.collection import CollectionManager
 from mtg.external_data import ExternalDataProvider
@@ -39,14 +40,26 @@ class Launcher(object):
         self.collection_manager = CollectionManager()
         self.external_provider = ExternalDataProvider()
         self.excluded_card_names: set[str] = set()
+        self.current_language = "fr"
 
     def import_collection(self):
         """Importe une collection depuis un fichier CSV."""
         file_path, import_type = self.window.get_csv_path_for_import_in_db()
         if file_path:
-            self.collection_manager.load_from_csv(file_path, import_type)
-            self.update_collection_list()
-            self.window.refresh_commander_candidates()
+            # progression: afficher un QProgressDialog indéterminé puis borné si possible
+            self.window.show_progress("Import de collection", "Lecture du fichier...")
+            try:
+                self.collection_manager.load_from_csv(
+                    file_path,
+                    import_type,
+                    progress_cb=self.window.update_progress,
+                    label_cb=self.window.set_progress_label,
+                )
+                self.window.set_progress_label("Rafraîchissement de l'interface...")
+                self.update_collection_list()
+                self.window.refresh_commander_candidates()
+            finally:
+                self.window.close_progress()
 
     def update_collection_list(self):
         """Mise à jour de la liste des cartes dans la fenêtre."""
@@ -54,10 +67,19 @@ class Launcher(object):
         # Alimente l'onglet avec données + filtres
         if hasattr(self.window, "set_collection_cards"):
             self.window.set_collection_cards(cards)
+            # Rafraîchir la langue pour recharger les libellés des filtres avec les nouvelles valeurs
+            if hasattr(self.window, "apply_language"):
+                self.window.apply_language(getattr(self.window, "language", "fr"))
         else:
             self.window.collection_list.clear()
             for card in cards:
                 self.window.collection_list.addItem(' / '.join([card["name"], card["colors"], card["types"], str(card["quantity"]), card["set_name"], str(card["collector_number"])]))
+
+    def set_language(self, lang: str):
+        """Change la langue de l'interface et rafraîchit les textes."""
+        self.current_language = lang or "fr"
+        if hasattr(self.window, "apply_language"):
+            self.window.apply_language(self.current_language)
 
     def export_collection(self):
         """Exporte la collection vers un fichier CSV."""
@@ -66,6 +88,15 @@ class Launcher(object):
         )
         if file_path:
             self.collection_manager.export_db_to_csv(file_path)
+
+    def delete_collection(self):
+        """Supprime toute la collection après confirmation."""
+        reply = self.window.confirm_delete_collection()
+        if reply:
+            self.collection_manager.clear_all_cards()
+            self.update_collection_list()
+            self.window.refresh_commander_candidates()
+            self.window.statusBar().showMessage("Collection supprimée", 4000)
 
     def export_eventual_cards_list(self):
         """Exporte la liste des cartes eventuelles dans un fichier txt"""
