@@ -65,27 +65,45 @@ class ExternalDataProvider:
                 cards[card["name"]] = {"oracle_id": card["uid"], "quantity": result["quantity"], "edhrec_rank": card["edhrecRank"], "defaultCategory": card["defaultCategory"], "occurence": 1}
         return cards
 
-    def get_scryfall_data(self, scryfall_id: str) -> Tuple[str, list]:
+    def get_scryfall_data(self, identifier: str):
         """Récupère les informations d'une carte depuis l'API Scryfall.
-        
+
         Args:
-            scryfall_id: L'identifiant de la carte sur Scryfall
-        
+            identifier: Soit un ``scryfall_id`` (UUID), soit un nom exact de
+                carte. Si l'identifiant ressemble à un UUID, on utilise
+                ``/cards/{id}``, sinon l'endpoint ``/cards/named`` avec
+                ``?exact=``.
+
         Returns:
-            les informations de la carte
+            dict: les informations complètes de la carte telles que renvoyées
+            par Scryfall.
         """
-        if scryfall_id in self._scryfall_cache:
-            return self._scryfall_cache[scryfall_id]
+        cache_key = identifier
+        if cache_key in self._scryfall_cache:
+            return self._scryfall_cache[cache_key]
 
         try:
-            # Appel à l'API Scryfall
+            # Déterminer si l'identifiant ressemble à un UUID Scryfall
+            is_uuid_like = len(identifier) in (32, 36) and all(c in "0123456789abcdef-" for c in identifier.lower())
+
             time.sleep(0.075)
-            response = requests.get(f"https://api.scryfall.com/cards/{scryfall_id}")
+            if is_uuid_like:
+                url = f"https://api.scryfall.com/cards/{identifier}"
+            else:
+                # Recherche par nom exact
+                url = "https://api.scryfall.com/cards/named"
+                params = {"exact": identifier}
+
+            if is_uuid_like:
+                response = requests.get(url)
+            else:
+                response = requests.get(url, params=params)
+
             response.raise_for_status()  # Lève une exception pour les codes d'erreur HTTP
             card_data = response.json()
-            self._scryfall_cache[scryfall_id] = card_data
+            self._scryfall_cache[cache_key] = card_data
             return card_data
-            
+
         except requests.exceptions.RequestException as e:
             logger.error(f"Erreur lors de l'appel à l'API Scryfall : {str(e)}")
             raise ValueError(f"Impossible de récupérer les informations de la carte : {str(e)}")

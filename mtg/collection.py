@@ -367,10 +367,34 @@ class CollectionManager:
             name: Le nom de la carte
             
         Returns:
-            Un ensemble de lettres représentant les couleurs de la carte
+            Un ensemble de lettres représentant les couleurs de la carte.
+            
+        Comportement particulier pour les commandants non présents dans la collection :
+            - Si la carte n'est pas trouvée en base locale, on interroge Scryfall
+              via ``ExternalDataProvider`` pour récupérer son identité couleur.
+            - En cas d'échec (erreur réseau, carte introuvable, etc.), on
+              retourne un ensemble vide, ce qui laisse le deckbuilder gérer
+              la situation (identité couleur considérée comme inconnue).
         """
         card = self.find_card_by_name(name)
-        return set(card.get("colors", []))
+        if card is not None:
+            import ast
+            colors = ast.literal_eval(card.get("colors", []))
+            return set(colors)
+
+        # Pas dans la collection locale : tentative via Scryfall
+        try:
+            provider = ExternalDataProvider()
+            data = provider.get_scryfall_data(name)
+        except Exception:
+            # En cas de problème d'accès à Scryfall, on considère la carte
+            # comme incolore / identité inconnue pour ne pas bloquer.
+            return set()
+
+        # On récupère l'identité couleur (color_identity est la bonne notion
+        # pour Commander), en tombant éventuellement sur une carte incolore.
+        colors = data.get("color_identity") or []
+        return set(colors)
 
     def has_card(self, name: str) -> bool:
         """Vérifie si une carte est présente dans la collection.

@@ -222,6 +222,47 @@ class DeckBuilder:
             else:
                 nonland_candidates.append(name)
 
+        # Ajouter le commandant au tout début s'il n'est pas déjà dans les
+        # candidats issus de la collection (cas commandant non possédé).
+        commander_in_candidates = self.commander_name in nonland_candidates or self.commander_name in land_candidates
+        if not commander_in_candidates:
+            try:
+                # data = self.app.external_provider.get_scryfall_data(self.commander_name)
+                # types = data.get("type_line", "")
+                # scryfall_id = data.get("id")
+
+                # image_url = None
+                # if "image_uris" in data:
+                #     urls = data["image_uris"]
+                #     image_url = (
+                #         urls.get("normal")
+                #         or urls.get("large")
+                #         or urls.get("png")
+                #     )
+                # faces = data.get("card_faces")
+                # if faces and not image_url:
+                #     for face in faces:
+                #         urls = face.get("image_uris")
+                #         if urls:
+                #             image_url = (
+                #                 urls.get("normal")
+                #                 or urls.get("large")
+                #                 or urls.get("png")
+                #             )
+                #             if image_url:
+                #                 break
+
+                # On ajoute le commandant comme première carte sélectionnée
+                selected.append(self.commander_name)
+                selected_set.add(self.commander_name)
+                score_by_name.setdefault(self.commander_name, 1.0)
+                role_by_name.setdefault(self.commander_name, ROLE_WINCON)
+                # S'assurer qu'on garde une place pour lui dans le total de 100
+                # (les étapes suivantes sélectionnent au plus 99 autres cartes).
+            except Exception:
+                # Si l'appel à Scryfall échoue, on ne force pas l'ajout
+                pass
+
         # 1) Sélection par rôles (hors terrains)
         current_role_counts: Dict[str, int] = {r: 0 for r in PRIMARY_ROLES}
 
@@ -323,8 +364,64 @@ class DeckBuilder:
         for info in self.deck_data:
             if info["name"] in selected:
                 cts.DECK_BUILD_SCRYFALL_ID_LIST.append(info["scryfall_id"])
-                items = {"name": info["name"], "types": info["types"], "role": info["defaultCategory"], "score": score_by_name[info["name"]], "scryfall_id": info["scryfall_id"], "image_url": info["image_url"]}
+                items = {
+                    "name": info["name"],
+                    "types": info["types"],
+                    "role": info["defaultCategory"],
+                    "score": score_by_name[info["name"]],
+                    "scryfall_id": info["scryfall_id"],
+                    "image_url": info["image_url"],
+                }
                 list_info_selected.append(items)
+
+        # Si le commandant n'est pas présent dans les cartes sélectionnées
+        # (parce qu'il n'est pas dans la collection), on l'ajoute quand même
+        # en allant chercher ses informations via Scryfall.
+        commander_already_in_deck = any(
+            card["name"] == self.commander_name for card in list_info_selected
+        )
+        if not commander_already_in_deck:
+            try:
+                data = self.app.external_provider.get_scryfall_data(self.commander_name)
+                types = data.get("type_line", "")
+                scryfall_id = data.get("id")
+
+                image_url = None
+                if "image_uris" in data:
+                    urls = data["image_uris"]
+                    image_url = (
+                        urls.get("normal")
+                        or urls.get("large")
+                        or urls.get("png")
+                    )
+                faces = data.get("card_faces")
+                if faces and not image_url:
+                    for face in faces:
+                        urls = face.get("image_uris")
+                        if urls:
+                            image_url = (
+                                urls.get("normal")
+                                or urls.get("large")
+                                or urls.get("png")
+                            )
+                            if image_url:
+                                break
+
+                commander_item = {
+                    "name": self.commander_name,
+                    "types": types,
+                    "role": ROLE_WINCON,
+                    "score": 1.0,
+                    "scryfall_id": scryfall_id,
+                    "image_url": image_url,
+                }
+                list_info_selected.insert(0, commander_item)
+                if scryfall_id:
+                    cts.DECK_BUILD_SCRYFALL_ID_LIST.insert(0, scryfall_id)
+            except Exception:
+                # En cas d'échec, on laisse simplement le deck sans commandant
+                pass
+
         return Deck(commander=self.commander_name, cards=list_info_selected)
 
 
