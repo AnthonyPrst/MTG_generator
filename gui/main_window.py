@@ -1201,7 +1201,7 @@ class MainWindow(QMainWindow):
             self, 
             "Type de format de l'import", 
             "Import depuis:", 
-            ["ManaBox - Collection", "Moxfield"]
+            ["ManaBox - Collection", "CardNexus"]
         )[0]
         return file_path, import_type
 

@@ -221,6 +221,12 @@ class Launcher(object):
                     # Retire les informations de set entre parenthèses
                     candidate = candidate.split("(")[0].strip()
                     if candidate:
+                        # On ignore les terrains de base (Basic Lands)
+                        basic_lands = {
+                            "forest", "plaine", "island", "swamp", "mountain", "plains", "forêt", "île", "marais", "montagne"
+                        }
+                        if candidate.lower() in basic_lands:
+                            continue
                         names.add(candidate.lower())
             self.excluded_card_names = names
             self.window.statusBar().showMessage(f"{len(names)} cartes d'exclusion chargées", 5000)

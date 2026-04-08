@@ -129,7 +129,7 @@ class CollectionManager:
         """Charge les données du CSV dans la base de données SQLite.
         
         Args:
-            import_type: Type d'import ('ManaBox - Collection' ou 'Moxfield')
+            import_type: Type d'import ('ManaBox - Collection', 'Moxfield' ou 'CardNexus')
             progress_cb: Fonction de callback pour mettre à jour la barre de progression
             label_cb: Fonction de callback pour mettre à jour le label de progression
         """
@@ -201,33 +201,88 @@ class CollectionManager:
                     existing_cards.add(key)
                     if progress_cb and total_rows:
                         progress_cb(current_row)
-                
-            elif import_type == "Moxfield":
-                required_columns = {'name', 'scryfall_id', 'colors', 'types', 'quantity'}
+
+            elif import_type == "CardNexus":
+                required_columns = {'totalQtyOwned', 'name', 'expansion', 'printNumber', 'language', 'condition'}
                 if not required_columns.issubset(reader.fieldnames or []):
-                    raise ValueError(f"Le fichier Moxfield doit contenir les colonnes : {required_columns}")
-                
+                    raise ValueError(f"Le fichier CardNexus doit contenir les colonnes : {required_columns}")
+
+                self.external_data_priovider = ExternalDataProvider()
+
                 for row in reader:
                     current_row += 1
                     if label_cb:
-                        label_cb(f"Import Moxfield ({current_row}/{total_rows or '?'})")
-                    scryfall_id = row.get('scryfall_id', '').strip()
-                    key = (row['name'].strip().lower(), scryfall_id)
-                    if key in existing_cards:
+                        label_cb(f"Import CardNexus ({current_row}/{total_rows or '?'})")
+                    
+                    card_name = row['name'].strip()
+                    # CardNexus n'a pas de Scryfall ID, on va essayer de le trouver via le nom
+                    # On utilise une clé basée sur le nom pour le check d'existence si scryfall_id est inconnu
+                    # Mais pour la DB, on préfère avoir le scryfall_id.
+                    
+                    # On cherche d'abord si on l'a déjà en base par son nom
+                    cursor.execute("SELECT scryfall_id FROM cards WHERE LOWER(name) = ?", (card_name.lower(),))
+                    res = cursor.fetchone()
+                    scryfall_id = res[0] if res else ""
+                    
+                    key = (card_name.lower(), scryfall_id)
+                    if key in existing_cards and scryfall_id:
                         continue
+                    
+                    # Si on n'a pas de scryfall_id, on interroge l'API
+                    oracle_id, image, types, colors, set_code, collector_number = "", "", "", [], "", ""
+                    try:
+                        card_data = self.external_data_priovider.get_scryfall_data(card_name)
+                        scryfall_id = card_data.get('id', '')
+                        oracle_id = card_data.get('oracle_id', '')
+                        types = card_data.get('type_line', '')
+                        colors = card_data.get('color_identity', [])
+                        set_code = card_data.get('set', '').upper()
+                        
+                        if "image_uris" in card_data:
+                            urls = card_data["image_uris"]
+                            image = urls.get("normal") or urls.get("large") or urls.get("png")
+                        
+                        faces = card_data.get("card_faces")
+                        if faces:
+                            for face in faces:
+                                urls = face.get("image_uris")
+                                if urls:
+                                    image = urls.get("normal") or urls.get("large") or urls.get("png")
+                        
+                        if not colors and 'Land' not in types:
+                            colors = ['colorless']
+
+                    except Exception as e:
+                        logger.warning(f"Impossible de trouver les données pour {card_name}: {e}")
+                        # On utilise les données du CSV si possible pour le set et le numéro
+                        set_code = "" # CardNexus n'a pas de set_code court
+                        pass
+
                     cursor.execute("""
                         INSERT OR IGNORE INTO cards 
-                        (name, scryfall_id, colors, types, quantity)
-                        VALUES (?, ?, ?, ?, ?)
+                        (name, colors, types, scryfall_id, oracle_id, set_code, set_name, collector_number, image_url,
+                            foil, rarity, quantity, card_condition, language)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """, (
-                        row['name'].strip(),
+                        card_name,
+                        str(colors),
+                        types,
                         scryfall_id,
-                        row.get('colors', '').upper().strip(),
-                        row.get('types', '').strip(),
-                        int(row.get('quantity', 1))
+                        oracle_id,
+                        set_code,
+                        row.get('expansion', '').strip(),
+                        row.get('printNumber', '').strip(),
+                        image,
+                        1 if row.get('finish', '').lower() == 'foil' else 0,
+                        row.get('rarity', '').strip(),
+                        int(row.get('totalQtyOwned', 1)),
+                        row.get('condition', '').strip(),
+                        row.get('language', 'English').strip()
                     ))
                     inserted_count += cursor.rowcount
-                    existing_cards.add(key)
+                    if scryfall_id:
+                        existing_cards.add((card_name.lower(), scryfall_id))
+                    
                     if progress_cb and total_rows:
                         progress_cb(current_row)
             else:

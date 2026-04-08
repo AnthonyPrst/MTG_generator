@@ -65,20 +65,20 @@ class ExternalDataProvider:
                 cards[card["name"]] = {"oracle_id": card["uid"], "quantity": result["quantity"], "edhrec_rank": card["edhrecRank"], "defaultCategory": card["defaultCategory"], "occurence": 1}
         return cards
 
-    def get_scryfall_data(self, identifier: str):
+    def get_scryfall_data(self, identifier: str, set_code: str = None, collector_number: str = None):
         """Récupère les informations d'une carte depuis l'API Scryfall.
 
         Args:
             identifier: Soit un ``scryfall_id`` (UUID), soit un nom exact de
-                carte. Si l'identifiant ressemble à un UUID, on utilise
-                ``/cards/{id}``, sinon l'endpoint ``/cards/named`` avec
-                ``?exact=``.
+                carte.
+            set_code: Code de l'extension (ex: 'DSK') pour une recherche précise.
+            collector_number: Numéro de collection pour une recherche précise.
 
         Returns:
             dict: les informations complètes de la carte telles que renvoyées
             par Scryfall.
         """
-        cache_key = identifier
+        cache_key = f"{identifier}_{set_code}_{collector_number}" if set_code and collector_number else identifier
         if cache_key in self._scryfall_cache:
             return self._scryfall_cache[cache_key]
 
@@ -89,14 +89,15 @@ class ExternalDataProvider:
             time.sleep(0.075)
             if is_uuid_like:
                 url = f"https://api.scryfall.com/cards/{identifier}"
+                response = requests.get(url)
+            elif set_code and collector_number:
+                # Recherche par set et numéro (plus précise)
+                url = f"https://api.scryfall.com/cards/{set_code.lower()}/{collector_number}"
+                response = requests.get(url)
             else:
                 # Recherche par nom exact
                 url = "https://api.scryfall.com/cards/named"
                 params = {"exact": identifier}
-
-            if is_uuid_like:
-                response = requests.get(url)
-            else:
                 response = requests.get(url, params=params)
 
             response.raise_for_status()  # Lève une exception pour les codes d'erreur HTTP
@@ -105,6 +106,11 @@ class ExternalDataProvider:
             return card_data
 
         except requests.exceptions.RequestException as e:
+            # Fallback sur la recherche par nom si la recherche par set/numéro échoue
+            if set_code and collector_number:
+                logger.warning(f"Recherche précise échouée pour {identifier} ({set_code}/{collector_number}), tentative par nom seul...")
+                return self.get_scryfall_data(identifier)
+            
             logger.error(f"Erreur lors de l'appel à l'API Scryfall : {str(e)}")
             raise ValueError(f"Impossible de récupérer les informations de la carte : {str(e)}")
         except (KeyError, ValueError) as e:
