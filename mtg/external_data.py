@@ -78,6 +78,9 @@ class ExternalDataProvider:
             dict: les informations complètes de la carte telles que renvoyées
             par Scryfall.
         """
+        if identifier and identifier.startswith("cardnexus::"):
+            return None
+
         cache_key = f"{identifier}_{set_code}_{collector_number}" if set_code and collector_number else identifier
         if cache_key in self._scryfall_cache:
             return self._scryfall_cache[cache_key]
@@ -119,6 +122,8 @@ class ExternalDataProvider:
 
     def get_image_url_from_scryfall(self, scryfall_id: str) -> Optional[str]:
         """Retourne l'URL d'image (format normal) pour une carte donnée."""
+        if scryfall_id and scryfall_id.startswith("cardnexus::"):
+            return None
         data = self.get_scryfall_data(scryfall_id)
         if not data:
             return None
@@ -139,7 +144,7 @@ class ExternalDataProvider:
 
     def get_card_cmc(self, scryfall_id: str) -> Optional[float]:
         """Retourne le coût converti de mana (cmc) d'une carte depuis Scryfall (cache)."""
-        if not scryfall_id:
+        if not scryfall_id or scryfall_id.startswith("cardnexus::"):
             return None
         data = self.get_scryfall_data(scryfall_id)
         if not data:

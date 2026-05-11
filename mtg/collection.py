@@ -10,6 +10,7 @@ from typing import List, Dict, Optional, Any, Set
 import logging
 from mtg import constants as cts
 from mtg.external_data import ExternalDataProvider
+from mtg.import_formats import get_import_format, detect_format, get_available_formats
 
 logger = logging.getLogger(__name__)
 
@@ -89,67 +90,41 @@ class CollectionManager:
             cursor.execute("SELECT COUNT(*) as count FROM cards")
             return cursor.fetchone()["count"] == 0
 
-    
-
-    def _get_some_data_from_scryfall(self, scryfall_id: str) -> Tuple[str, list]:
-        """Récupère les types et les couleurs d'une carte depuis l'API Scryfall.
-        
-        Args:
-            scryfall_id: L'identifiant de la carte sur Scryfall
-        
-        Returns:
-            Un tuple contenant (types, couleurs) de la carte
-        """
-        types, colors = None, None
-        
-        card_data = self.external_data_priovider.get_scryfall_data(scryfall_id)
-        # Extraction des types et couleurs
-        oracle_id = card_data.get('oracle_id', '')
-        types = card_data.get('type_line', '')
-        colors = card_data.get('color_identity', [])
-        image = ''
-        if "image_uris" in card_data:
-            urls = card_data["image_uris"]
-            image = urls.get("normal") or urls.get("large") or urls.get("png")
-
-        # Cartes double-face, split, etc.
-        faces = card_data.get("card_faces")
-        if faces:
-            for face in faces:
-                urls = face.get("image_uris")
-                if urls:
-                    image = urls.get("normal") or urls.get("large") or urls.get("png")
-        
-        # Si pas de couleurs (artefact, terre, etc.)
-        if not colors and 'Land' not in types:
-            colors = ['colorless'] 
-        return oracle_id, image, types, colors
-
-    def _load_csv_into_db(self, import_type: str, progress_cb=None, label_cb=None) -> None:
+    def _load_csv_into_db(self, import_type: str, progress_cb=None, label_cb=None, bulk_provider=None) -> None:
         """Charge les données du CSV dans la base de données SQLite.
         
         Args:
-            import_type: Type d'import ('ManaBox - Collection', 'Moxfield' ou 'CardNexus')
+            import_type: Type d'import ('ManaBox - Collection', 'Moxfield', 'CardNexus', etc.)
             progress_cb: Fonction de callback pour mettre à jour la barre de progression
             label_cb: Fonction de callback pour mettre à jour le label de progression
+            bulk_provider: ScryfallSyncManager optionnel pour lookup local (évite les appels API)
         """
+        # Récupérer le format d'import
+        import_format = get_import_format(import_type)
+        if not import_format:
+            raise ValueError(f"Format d'import non supporté : {import_type}")
+        
         with (
             open(self.csv_path, 'r', encoding='utf-8') as csvfile,
             self._get_connection() as conn
         ):
             reader = csv.DictReader(csvfile)
+            
+            # Valider les colonnes requises
+            import_format.validate_columns(reader.fieldnames)
+            
             cursor = conn.cursor()
-
             cursor.execute("SELECT LOWER(name) as name, scryfall_id FROM cards")
             existing_cards: Set[tuple[str, str]] = {
                 (row["name"], (row["scryfall_id"] or "").strip()) for row in cursor.fetchall()
             }
             inserted_count = 0
             
-            # Vérifier les colonnes requises
-            total_rows = 0
             # Compter le nombre de lignes pour le suivi de progression
+            total_rows = 0
             try:
+                csvfile.seek(0)
+                reader = csv.DictReader(csvfile)
                 total_rows = sum(1 for _ in reader)
                 csvfile.seek(0)
                 reader = csv.DictReader(csvfile)
@@ -157,136 +132,56 @@ class CollectionManager:
                 total_rows = 0
 
             current_row = 0
-
-            if import_type == "ManaBox - Collection":
-                required_columns = {'Name', 'Set code', 'Set name', 'Collector number', 
-                                    'Foil', 'Rarity', 'Quantity', 'Scryfall ID', 'Condition', 'Language'}
-                if not required_columns.issubset(reader.fieldnames or []):
-                    raise ValueError(f"Le fichier ManaBox doit contenir les colonnes : {required_columns}")
+            self.external_data_priovider = ExternalDataProvider()
+            
+            # Traiter chaque ligne avec le format approprié
+            for row in reader:
+                current_row += 1
+                if label_cb:
+                    label_cb(f"Import {import_format.name} ({current_row}/{total_rows or '?'})")
                 
-                self.external_data_priovider = ExternalDataProvider()
-                
-                # Insérer uniquement les nouvelles données
-                for row in reader:
-                    current_row += 1
-                    if label_cb:
-                        label_cb(f"Import ManaBox ({current_row}/{total_rows or '?'})")
-                    scryfall_id = row.get('Scryfall ID', '').strip()
-                    key = (row['Name'].strip().lower(), scryfall_id)
-                    if key in existing_cards:
+                try:
+                    # Traiter la ligne avec le format d'import
+                    card_data = import_format.process_row(row, self.external_data_priovider, bulk_provider=bulk_provider)
+                    
+                    # Vérifier si la carte existe déjà
+                    key = (card_data['name'].lower(), card_data['scryfall_id'])
+                    if key in existing_cards and card_data['scryfall_id']:
                         continue
-                    oracle_id, image, types, colors = self._get_some_data_from_scryfall(scryfall_id)
+                    
+                    # Insérer la carte dans la base de données
                     cursor.execute("""
                         INSERT OR IGNORE INTO cards 
                         (name, colors, types, scryfall_id, oracle_id, set_code, set_name, collector_number, image_url,
                             foil, rarity, quantity, card_condition, language)
                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """, (
-                        row['Name'].strip(),
-                        str(colors),
-                        types,
-                        scryfall_id,
-                        oracle_id,
-                        row.get('Set code', '').strip(),
-                        row.get('Set name', '').strip(),
-                        row.get('Collector number', '').strip(),
-                        image,
-                        1 if row.get('Foil', '').lower() == 'foil' else 0,
-                        row.get('Rarity', '').strip(),
-                        int(row.get('Quantity', 1)),
-                        row.get('Condition', '').strip(),
-                        row.get('Language', 'English').strip()
+                        card_data['name'],
+                        card_data['colors'],
+                        card_data['types'],
+                        card_data['scryfall_id'],
+                        card_data['oracle_id'],
+                        card_data['set_code'],
+                        card_data['set_name'],
+                        card_data['collector_number'],
+                        card_data['image_url'],
+                        card_data['foil'],
+                        card_data['rarity'],
+                        card_data['quantity'],
+                        card_data['card_condition'],
+                        card_data['language']
                     ))
+                    
                     inserted_count += cursor.rowcount
-                    existing_cards.add(key)
-                    if progress_cb and total_rows:
-                        progress_cb(current_row)
-
-            elif import_type == "CardNexus":
-                required_columns = {'totalQtyOwned', 'name', 'expansion', 'printNumber', 'language', 'condition'}
-                if not required_columns.issubset(reader.fieldnames or []):
-                    raise ValueError(f"Le fichier CardNexus doit contenir les colonnes : {required_columns}")
-
-                self.external_data_priovider = ExternalDataProvider()
-
-                for row in reader:
-                    current_row += 1
-                    if label_cb:
-                        label_cb(f"Import CardNexus ({current_row}/{total_rows or '?'})")
-                    
-                    card_name = row['name'].strip()
-                    # CardNexus n'a pas de Scryfall ID, on va essayer de le trouver via le nom
-                    # On utilise une clé basée sur le nom pour le check d'existence si scryfall_id est inconnu
-                    # Mais pour la DB, on préfère avoir le scryfall_id.
-                    
-                    # On cherche d'abord si on l'a déjà en base par son nom
-                    cursor.execute("SELECT scryfall_id FROM cards WHERE LOWER(name) = ?", (card_name.lower(),))
-                    res = cursor.fetchone()
-                    scryfall_id = res[0] if res else ""
-                    
-                    key = (card_name.lower(), scryfall_id)
-                    if key in existing_cards and scryfall_id:
-                        continue
-                    
-                    # Si on n'a pas de scryfall_id, on interroge l'API
-                    oracle_id, image, types, colors, set_code, collector_number = "", "", "", [], "", ""
-                    try:
-                        card_data = self.external_data_priovider.get_scryfall_data(card_name)
-                        scryfall_id = card_data.get('id', '')
-                        oracle_id = card_data.get('oracle_id', '')
-                        types = card_data.get('type_line', '')
-                        colors = card_data.get('color_identity', [])
-                        set_code = card_data.get('set', '').upper()
-                        
-                        if "image_uris" in card_data:
-                            urls = card_data["image_uris"]
-                            image = urls.get("normal") or urls.get("large") or urls.get("png")
-                        
-                        faces = card_data.get("card_faces")
-                        if faces:
-                            for face in faces:
-                                urls = face.get("image_uris")
-                                if urls:
-                                    image = urls.get("normal") or urls.get("large") or urls.get("png")
-                        
-                        if not colors and 'Land' not in types:
-                            colors = ['colorless']
-
-                    except Exception as e:
-                        logger.warning(f"Impossible de trouver les données pour {card_name}: {e}")
-                        # On utilise les données du CSV si possible pour le set et le numéro
-                        set_code = "" # CardNexus n'a pas de set_code court
-                        pass
-
-                    cursor.execute("""
-                        INSERT OR IGNORE INTO cards 
-                        (name, colors, types, scryfall_id, oracle_id, set_code, set_name, collector_number, image_url,
-                            foil, rarity, quantity, card_condition, language)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """, (
-                        card_name,
-                        str(colors),
-                        types,
-                        scryfall_id,
-                        oracle_id,
-                        set_code,
-                        row.get('expansion', '').strip(),
-                        row.get('printNumber', '').strip(),
-                        image,
-                        1 if row.get('finish', '').lower() == 'foil' else 0,
-                        row.get('rarity', '').strip(),
-                        int(row.get('totalQtyOwned', 1)),
-                        row.get('condition', '').strip(),
-                        row.get('language', 'English').strip()
-                    ))
-                    inserted_count += cursor.rowcount
-                    if scryfall_id:
-                        existing_cards.add((card_name.lower(), scryfall_id))
+                    if card_data['scryfall_id']:
+                        existing_cards.add(key)
                     
                     if progress_cb and total_rows:
                         progress_cb(current_row)
-            else:
-                raise ValueError(f"Type d'import non supporté : {import_type}")
+                        
+                except Exception as e:
+                    logger.warning(f"Erreur lors du traitement de la ligne {current_row}: {e}")
+                    continue
             
             conn.commit()
             logger.info(f"Collection chargée depuis {self.csv_path} : {inserted_count} nouvelles cartes")
@@ -302,6 +197,46 @@ class CollectionManager:
             cursor.execute("SELECT * FROM cards ORDER BY name")
             return [dict(row) for row in cursor.fetchall()]
 
+    def _merge_card_rows(self, rows: List[sqlite3.Row]) -> Optional[Dict[str, Any]]:
+        """Fusionne plusieurs impressions d'une même carte en une vue agrégée."""
+        if not rows:
+            return None
+
+        merged = dict(rows[0])
+        merged["quantity"] = sum(int((row["quantity"] or 0)) for row in rows)
+
+        for field in (
+            "scryfall_id",
+            "oracle_id",
+            "set_code",
+            "set_name",
+            "collector_number",
+            "image_url",
+            "rarity",
+            "colors",
+            "types",
+            "card_condition",
+            "language",
+        ):
+            if merged.get(field):
+                continue
+            for row in rows[1:]:
+                if row[field]:
+                    merged[field] = row[field]
+                    break
+
+        return merged
+
+    def find_cards_by_name(self, name: str) -> List[Dict[str, Any]]:
+        """Retourne toutes les impressions correspondant à un nom exact."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT * FROM cards WHERE LOWER(name) = LOWER(?) ORDER BY id",
+                (name.strip(),)
+            )
+            return [dict(row) for row in cursor.fetchall()]
+
     def find_card_by_name(self, name: str) -> Optional[Dict[str, Any]]:
         """Recherche une carte par son nom exact (insensible à la casse).
         
@@ -314,11 +249,10 @@ class CollectionManager:
         with self._get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute(
-                "SELECT * FROM cards WHERE LOWER(name) = LOWER(?)",
+                "SELECT * FROM cards WHERE LOWER(name) = LOWER(?) ORDER BY id",
                 (name.strip(),)
             )
-            result = cursor.fetchone()
-            return dict(result) if result else None
+            return self._merge_card_rows(cursor.fetchall())
 
     def find_card_by_scryfallID(self, scryfall_id: str) -> Optional[Dict[str, Any]]:
         """Recherche une carte par son scryfall id.
@@ -350,11 +284,10 @@ class CollectionManager:
         with self._get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute(
-                "SELECT * FROM cards WHERE oracle_id = ?",
+                "SELECT * FROM cards WHERE oracle_id = ? ORDER BY id",
                 [oracle_id]
             )
-            result = cursor.fetchone()
-            return dict(result) if result else None
+            return self._merge_card_rows(cursor.fetchall())
 
     def search_cards(self, query: str) -> List[Dict[str, Any]]:
         """Recherche des cartes par nom (recherche partielle insensible à la casse).
@@ -435,7 +368,13 @@ class CollectionManager:
         if card is not None:
             import ast
             colors = ast.literal_eval(card.get("colors", []))
-            return set(colors)
+            normalized_colors = {
+                str(color).strip().upper()
+                for color in colors
+                if str(color).strip()
+                and str(color).strip().lower() != "colorless"
+            }
+            return normalized_colors
 
         # Pas dans la collection locale : tentative via Scryfall
         try:
@@ -568,23 +507,37 @@ class CollectionManager:
             self.conn.close()
 
     # Méthodes de compatibilité avec l'ancienne interface
-    def load_from_csv(self, csv_path: str, import_type: str, progress_cb=None, label_cb=None) -> bool:
-        """Charge la collection depuis un fichier CSV (compatibilité).
+    def load_from_csv(self, csv_path: str, import_type: str = None, progress_cb=None, label_cb=None, bulk_provider=None) -> bool:
+        """Charge la collection depuis un fichier CSV.
         
         Args:
             csv_path: Chemin vers le fichier CSV de collection.
+            import_type: Type d'import (si None, détection automatique)
+            progress_cb: Fonction de callback pour la progression
+            label_cb: Fonction de callback pour le label
+            bulk_provider: ScryfallSyncManager optionnel pour lookup local (évite les appels API)
             
         Returns:
             bool: True si le chargement a réussi, False sinon.
         """
-        # try:
-        cts.CSV_PATH = csv_path
-        self.csv_path = Path(csv_path)
-        self._load_csv_into_db(import_type, progress_cb, label_cb)
-        return True
-        # except Exception as e:
-        #     logger.error(f"Erreur lors du chargement du CSV : {str(e)}")
-        #     return False
+        try:
+            cts.CSV_PATH = csv_path
+            self.csv_path = Path(csv_path)
+            
+            # Détection automatique du format si non spécifié
+            if import_type is None:
+                detected_format = detect_format(csv_path)
+                if detected_format:
+                    import_type = detected_format.name
+                    logger.info(f"Format détecté automatiquement : {import_type}")
+                else:
+                    raise ValueError("Impossible de détecter automatiquement le format du fichier. Veuillez spécifier le format d'import.")
+            
+            self._load_csv_into_db(import_type, progress_cb, label_cb, bulk_provider=bulk_provider)
+            return True
+        except Exception as e:
+            logger.error(f"Erreur lors du chargement du CSV : {str(e)}")
+            return False
 
     def get_card(self, card_name: str) -> Optional[dict]:
         """Récupère les informations d'une carte par son nom (compatibilité).
@@ -650,8 +603,11 @@ class CollectionManager:
                     "defaultCategory": defaultCategory,
                     "needed": quantity_needed,
                     "owned": owned_quantity,
-                    "missing": max(0, quantity_needed - owned_quantity)
-
+                    "missing": max(0, quantity_needed - owned_quantity),
+                    # Données supplémentaires pour filtres
+                    "set_code": card_local.get("set_code", ""),
+                    "set_name": card_local.get("set_name", ""),
+                    "rarity": card_local.get("rarity", ""),
                 })
 
         return results

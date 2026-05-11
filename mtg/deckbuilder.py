@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Set, Iterable, Any
 from mtg import constants as cts
+from mtg.deck_strategies import StrategyManager, DeckStrategy
 
 # Rôles principaux gérés par le système de scoring
 ROLE_RAMP = "Ramp"
@@ -69,11 +70,18 @@ class DeckBuilder:
     module à l'interface graphique ou à d'autres composants.
     """
 
-    def __init__(self, app, commander_name:str, eventual_deck_data: List[Dict[str, Any]]) -> None:
+    def __init__(self, app, commander_name:str, eventual_deck_data: List[Dict[str, Any]], strategy_manager: Optional[StrategyManager] = None) -> None:
         self.app = app
         self.commander_name = commander_name
         self.commander_colors = self._get_card_colors(commander_name)
         self.deck_data = eventual_deck_data
+        self.strategy_manager = strategy_manager
+        self.commander_synergies: List[str] = []
+        
+        # Récupérer les données du commandant pour détecter les synergies
+        if strategy_manager:
+            self._load_commander_data()
+        
         self.scored_cards = self.score_cards()
 
     def _get_card_colors(self, name: str) -> Set[str]:
@@ -84,12 +92,40 @@ class DeckBuilder:
         de l'identité couleur du commandant.
         """
         return self.app.collection_manager.get_card_colors(name)
+    
+    def _load_commander_data(self):
+        """Charge les données du commandant pour détecter les synergies."""
+        try:
+            commander_data = self.app.external_provider.get_scryfall_data(self.commander_name)
+            if commander_data:
+                self.commander_synergies = self.strategy_manager.detect_commander_synergies(commander_data)
+        except Exception:
+            self.commander_synergies = []
 
 
     def _get_role_weight(self, role: str) -> float:
         """Retourne le poids de rôle pour le scoring."""
 
         return ROLE_WEIGHTS.get(role, DEFAULT_ROLE_WEIGHT)
+
+    def _get_card_cmc(self, card_info: Dict[str, Any]) -> float:
+        scryfall_id = card_info.get("scryfall_id")
+        cmc = None
+        if scryfall_id and not str(scryfall_id).startswith("cardnexus::"):
+            cmc = self.app.external_provider.get_card_cmc(scryfall_id)
+
+        if cmc is None:
+            card_name = card_info.get("name", "")
+            bulk_provider = getattr(self.app.window, "scryfall_sync", None)
+            bulk_data = bulk_provider.get_card_for_import(card_name=card_name) if (card_name and bulk_provider) else None
+            if bulk_data:
+                raw_cmc = bulk_data.get("cmc")
+                try:
+                    cmc = float(raw_cmc) if raw_cmc is not None else None
+                except (TypeError, ValueError):
+                    cmc = None
+
+        return float(cmc or 0)
 
 
     def score_cards(self) -> List[Dict[str, Any]]:
@@ -127,7 +163,16 @@ class DeckBuilder:
 
         scored: List[Dict[str, Any]] = []
         commander_colors = set(self.commander_colors)
-        for entry in self.deck_data:
+        
+        # Filtrer par rareté en mode budget
+        filtered_data = self.deck_data
+        if self.strategy_manager and self.strategy_manager.budget_mode:
+            filtered_data = [
+                entry for entry in self.deck_data 
+                if self.strategy_manager.is_budget_card(entry)
+            ]
+        
+        for entry in filtered_data:
             name = entry.get("name")
             if not name:
                 continue
@@ -158,7 +203,11 @@ class DeckBuilder:
 
             final = 0.65 * meta_score + 0.25 * rank_score + 0.10 * role_weight
             final = round(final, 4)
-
+            
+            # Bonus de synergie avec le commandant
+            if self.strategy_manager and self.commander_synergies:
+                final = self.strategy_manager.score_card_synergy(entry, self.commander_synergies, final)
+            
             scored.append({"name": name, "score": final, "role": role})
 
         # Tri décroissant par score, puis par nom pour déterminisme
@@ -369,8 +418,14 @@ class DeckBuilder:
                     "types": info["types"],
                     "role": info["defaultCategory"],
                     "score": score_by_name[info["name"]],
+                    "cmc": self._get_card_cmc(info),
                     "scryfall_id": info["scryfall_id"],
                     "image_url": info["image_url"],
+                    "colors": info.get("colors", ""),
+                    # Données pour filtres
+                    "set_code": info.get("set_code", ""),
+                    "set_name": info.get("set_name", ""),
+                    "rarity": info.get("rarity", ""),
                 }
                 list_info_selected.append(items)
 
@@ -412,8 +467,11 @@ class DeckBuilder:
                     "types": types,
                     "role": ROLE_WINCON,
                     "score": 1.0,
+                    "cmc": data.get("cmc", 0),
                     "scryfall_id": scryfall_id,
                     "image_url": image_url,
+                    "colors": data.get("color_identity", []),
+                    "rarity": data.get("rarity", ""),
                 }
                 list_info_selected.insert(0, commander_item)
                 if scryfall_id:

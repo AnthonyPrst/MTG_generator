@@ -49,12 +49,25 @@ class Launcher(object):
             # progression: afficher un QProgressDialog indéterminé puis borné si possible
             self.window.show_progress("Import de collection", "Lecture du fichier...")
             try:
-                self.collection_manager.load_from_csv(
+                # Utiliser le bulk Scryfall local si disponible (évite ~4000 appels API)
+                bulk_provider = None
+                if hasattr(self.window, 'scryfall_sync') and self.window.scryfall_sync.is_bulk_available():
+                    bulk_provider = self.window.scryfall_sync
+                    self.window.set_progress_label("Chargement du bulk Scryfall...")
+                    bulk_provider.load_oracle_cards()  # Pré-charger le cache
+                
+                success = self.collection_manager.load_from_csv(
                     file_path,
                     import_type,
                     progress_cb=self.window.update_progress,
                     label_cb=self.window.set_progress_label,
+                    bulk_provider=bulk_provider,
                 )
+                if not success:
+                    self.window.show_error(
+                        "L'import de collection a échoué. Vérifie le format sélectionné, ou utilise 'Détection automatique'."
+                    )
+                    return
                 self.window.set_progress_label("Rafraîchissement de l'interface...")
                 self.update_collection_list()
                 self.window.refresh_commander_candidates()
@@ -164,7 +177,8 @@ class Launcher(object):
     def build_deck(self):
         """Construit un deck Commander valide à partir d'une liste scorée."""
         commander_name = self.window.commander_input.currentText()
-        deck_builder = DeckBuilder(self, commander_name, self._apply_exclusions(self.eventual_owned))
+        strategy_manager = self.window.get_strategy_manager()
+        deck_builder = DeckBuilder(self, commander_name, self._apply_exclusions(self.eventual_owned), strategy_manager)
         self.window.show_progress("Construction du deck", "Génération en cours...", maximum=100)
         try:
             deck = deck_builder.build_deck()
@@ -182,6 +196,12 @@ class Launcher(object):
             sum_score += card["score"]
         mean_score = sum_score / len(deck.cards)
         self.window.set_length_and_score_of_deck_list(len(deck.cards), mean_score)
+        
+        # Calculer le power level
+        from mtg.edhrec_analytics import EDHRecAnalytics
+        analytics = EDHRecAnalytics()
+        power_data = analytics.calculate_deck_power_level(cards, commander_name)
+        self.window.set_deck_power_level(power_data)
         if hasattr(self.window, "set_deck_cards"):
             self.window.set_deck_cards(cards)
         
@@ -189,8 +209,7 @@ class Launcher(object):
         mana_curve_text, stats_text = self._compute_deck_stats(summary)
         self.window.set_deck_stats(mana_curve_text, stats_text)
         self.window.update_progress(75)
-        mana_curve_pixmap, roles_pixmap = self._compute_deck_graphs(summary)
-        self.window.set_deck_graphs(mana_curve_pixmap, roles_pixmap)
+        self.window.set_deck_graphs(summary)
         self.window.update_progress(100)
         self.window.close_progress()
 
@@ -259,18 +278,43 @@ class Launcher(object):
         cmc_count = 0
         lands = 0
         roles: dict[str, int] = {}
+        colors = {k: 0 for k in ["W", "U", "B", "R", "G", "C"]}
+        rarities: dict[str, int] = {}
 
         for card in cards:
             types = card.get("types", "")
-            role = card.get("role") or "Other"
+            role = _normalize_role_label(card.get("role") or "Other")
             roles[role] = roles.get(role, 0) + 1
+
+            rarity = _normalize_rarity_label(card.get("rarity") or "")
+            rarities[rarity] = rarities.get(rarity, 0) + 1
+
+            card_colors = self.collection_manager.get_card_colors(card.get("name", ""))
+            if card_colors:
+                for color in card_colors:
+                    if color in colors:
+                        colors[color] += 1
+            elif "Land" not in types:
+                colors["C"] += 1
 
             if "Land" in types:
                 lands += 1
                 continue
 
             scryfall_id = card.get("scryfall_id")
-            cmc = self.external_provider.get_card_cmc(scryfall_id) if scryfall_id else None
+            cmc = None
+            if scryfall_id and not scryfall_id.startswith("cardnexus::"):
+                cmc = self.external_provider.get_card_cmc(scryfall_id)
+            if cmc is None:
+                card_name = card.get("name", "")
+                bulk_provider = getattr(self.window, "scryfall_sync", None)
+                bulk_data = bulk_provider.get_card_for_import(card_name=card_name) if (card_name and bulk_provider) else None
+                if bulk_data:
+                    raw_cmc = bulk_data.get("cmc")
+                    try:
+                        cmc = float(raw_cmc) if raw_cmc is not None else None
+                    except (TypeError, ValueError):
+                        cmc = None
             if cmc is None:
                 continue
             cmc_count += 1
@@ -289,6 +333,8 @@ class Launcher(object):
             "cmc_count": cmc_count,
             "lands": lands,
             "roles": roles,
+            "colors": colors,
+            "rarities": rarities,
             "total_cards": len(cards),
         }
 
@@ -306,69 +352,59 @@ class Launcher(object):
         mana_curve_text = "Courbe de mana : " + " | ".join(curve_parts)
 
         avg_cmc = (total_cmc / cmc_count) if cmc_count else 0.0
+        colors = summary.get("colors", {})
+        color_text = ", ".join(
+            f"{key}: {colors.get(key, 0)}" for key in ["W", "U", "B", "R", "G", "C"] if colors.get(key, 0)
+        ) or "n/a"
         stats_lines = [
             f"Cartes totales : {total_cards}",
             f"Lands : {lands}",
             f"CMJ moyenne : {avg_cmc:.2f}" if cmc_count else "CMJ moyenne : n/a",
             "Répartition par rôle : " + ", ".join(f"{r}: {n}" for r, n in sorted(roles.items())),
+            "Répartition couleurs : " + color_text,
         ]
         stats_text = "\n".join(stats_lines)
         return mana_curve_text, stats_text
 
-    def _compute_deck_graphs(self, summary: dict):
-        """Retourne deux QPixmap: histogramme courbe de mana et camembert rôles."""
-        try:
-            import matplotlib
-            matplotlib.use("Agg")
-            import matplotlib.pyplot as plt
-            from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg
-        except Exception:
-            return None, None
 
-        buckets = summary["buckets"]
-        roles = summary["roles"]
+def _normalize_role_label(role: str) -> str:
+    value = str(role or "").strip()
+    if not value:
+        return "Other"
 
-        # Figure histogramme
-        fig1, ax1 = plt.subplots(figsize=(4, 3), dpi=120)
-        x_labels = list(buckets.keys())
-        vals = [buckets[k] for k in x_labels]
-        ax1.bar(x_labels, vals, color="#3b82f6")
-        ax1.set_title("Courbe de mana")
-        ax1.set_ylabel("Nombre de cartes")
-        ax1.set_xlabel("Coût")
-        ax1.grid(axis="y", linestyle="--", alpha=0.4)
-        fig1.tight_layout()
+    normalized = value.lower().replace(" ", "").replace("-", "")
+    aliases = {
+        "ramp": "Ramp",
+        "draw": "Draw",
+        "carddraw": "Draw",
+        "removal": "Removal",
+        "interaction": "Removal",
+        "boardwipe": "Boardwipe",
+        "wipe": "Boardwipe",
+        "finisher": "Finisher",
+        "wincon": "Finisher",
+        "wincondition": "Finisher",
+        "land": "Land",
+        "other": "Other",
+    }
+    return aliases.get(normalized, value.title())
 
-        # Figure camembert rôles
-        fig2, ax2 = plt.subplots(figsize=(4, 3), dpi=120)
-        labels = []
-        sizes = []
-        for r, n in sorted(roles.items()):
-            if n > 0:
-                labels.append(r)
-                sizes.append(n)
-        if sizes:
-            ax2.pie(sizes, labels=labels, autopct="%1.0f%%", startangle=140)
-            ax2.set_title("Répartition des rôles")
-        fig2.tight_layout()
 
-        # Convert figures to QPixmap
-        def fig_to_qpixmap(fig):
-            from io import BytesIO
-            buf = BytesIO()
-            fig.savefig(buf, format="png", bbox_inches="tight")
-            buf.seek(0)
-            from PySide6.QtGui import QPixmap
-            pix = QPixmap()
-            pix.loadFromData(buf.getvalue())
-            buf.close()
-            return pix
+def _normalize_rarity_label(rarity: str) -> str:
+    value = str(rarity or "").strip().lower()
+    if not value:
+        return "Unknown"
 
-        mana_pix = fig_to_qpixmap(fig1)
-        roles_pix = fig_to_qpixmap(fig2)
-        plt.close(fig1)
-        plt.close(fig2)
-        return mana_pix, roles_pix
+    aliases = {
+        "common": "Common",
+        "uncommon": "Uncommon",
+        "rare": "Rare",
+        "mythic": "Mythic",
+        "mythic rare": "Mythic",
+        "special": "Special",
+    }
+    return aliases.get(value, value.capitalize())
+
 
 if __name__ == "__main__":
     app = Launcher()

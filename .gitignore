@@ -1,5 +1,11 @@
 env/
+__pycache__/
+**/__pycache__/
+*.pyc
+*.pyo
 data/collection.db
 data/ManaBox_Collection.csv
 data/oracle-cards.json
+data/scryfall/oracle-cards.json
+data/scryfall/*.json
 build/
