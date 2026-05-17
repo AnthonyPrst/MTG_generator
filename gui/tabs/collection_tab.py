@@ -92,6 +92,14 @@ class CollectionTab(QWidget):
         self.collection_type_filter.currentTextChanged.connect(self.refresh_collection_list)
         tb_layout.addWidget(self.collection_type_filter)
 
+        # Filtre set
+        self.collection_set_filter = QComboBox()
+        self.collection_set_filter.addItem("Toutes les éditions")
+        self.collection_set_filter.setMinimumHeight(36)
+        self.collection_set_filter.setFixedWidth(200)
+        self.collection_set_filter.currentTextChanged.connect(self.refresh_collection_list)
+        tb_layout.addWidget(self.collection_set_filter)
+
         self.clear_filters_btn = QPushButton("✕  Réinitialiser")
         self.clear_filters_btn.setMinimumHeight(36)
         self.clear_filters_btn.clicked.connect(self._clear_filters)
@@ -151,7 +159,7 @@ class CollectionTab(QWidget):
         self.refresh_collection_list()
 
     def _update_filters(self):
-        colors, types = set(), set()
+        colors, types, sets = set(), set(), set()
         for card in self.collection_cards:
             colors_raw = str(card.get("colors", "")).replace("[", "").replace("]", "").replace("'", "")
             for part in colors_raw.split(","):
@@ -161,10 +169,14 @@ class CollectionTab(QWidget):
             main_type = (card.get("types") or "").split(" — ")[0].strip()
             if main_type:
                 types.add(main_type)
+            set_name = (card.get("set_name") or card.get("set_code") or "").strip()
+            if set_name:
+                sets.add(set_name)
 
         for combo, items, default in (
             (self.collection_color_filter, sorted(colors), "Toutes les couleurs"),
             (self.collection_type_filter, sorted(types), "Tous les types"),
+            (self.collection_set_filter, sorted(sets), "Toutes les éditions"),
         ):
             combo.blockSignals(True)
             current = combo.currentText()
@@ -180,8 +192,10 @@ class CollectionTab(QWidget):
         query = self.collection_search.text().strip().lower()
         color_f = self.collection_color_filter.currentText()
         type_f = self.collection_type_filter.currentText()
+        set_f = self.collection_set_filter.currentText()
         color_default = self.collection_color_filter.itemText(0)
         type_default = self.collection_type_filter.itemText(0)
+        set_default = self.collection_set_filter.itemText(0)
 
         filtered: List[Dict] = []
         total_qty = 0
@@ -202,6 +216,10 @@ class CollectionTab(QWidget):
                     continue
             if type_f != type_default:
                 if type_f.lower() not in types_field.lower():
+                    continue
+            if set_f != set_default:
+                card_set = (card.get("set_name") or card.get("set_code") or "").strip()
+                if card_set != set_f:
                     continue
 
             filtered.append(card)
@@ -272,6 +290,7 @@ class CollectionTab(QWidget):
         self.collection_search.clear()
         self.collection_color_filter.setCurrentIndex(0)
         self.collection_type_filter.setCurrentIndex(0)
+        self.collection_set_filter.setCurrentIndex(0)
         self.refresh_collection_list()
         self.filters_reset.emit()
 

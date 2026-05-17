@@ -2,6 +2,7 @@
 
 from typing import Optional, List, Dict
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from threading import Lock
 
 import requests
 import time
@@ -43,26 +44,30 @@ class CheckableComboBox(QComboBox):
                 border: 1px solid #30363d;
             }
             QListView::item {
-                padding: 4px 8px;
+                padding: 4px 8px 4px 6px;
                 min-height: 24px;
             }
             QListView::item:hover {
                 background: #30363d;
             }
-            QListView::indicator {
+            QAbstractItemView::indicator {
                 width: 16px;
                 height: 16px;
                 margin-right: 6px;
             }
-            QListView::indicator:unchecked {
+            QAbstractItemView::indicator:unchecked {
                 border: 2px solid #484f58;
                 background: #0d1117;
                 border-radius: 3px;
             }
-            QListView::indicator:checked {
+            QAbstractItemView::indicator:checked {
                 border: 2px solid #238636;
                 background: #238636;
                 border-radius: 3px;
+            }
+            QAbstractItemView::item:selected {
+                background: #1f3a6e;
+                color: #e6edf3;
             }
         """)
         
@@ -344,21 +349,21 @@ class BuildTab(QWidget):
 
         # Filtre édition (multi-sélection)
         self.deck_filter_set = CheckableComboBox("Toutes éditions")
-        self.deck_filter_set.setFixedWidth(130)
+        self.deck_filter_set.setFixedWidth(250)
         self.deck_filter_set.selection_changed.connect(self._apply_filters)
         dk_header.addWidget(QLabel("Set:"))
         dk_header.addWidget(self.deck_filter_set)
 
         # Filtre rareté (multi-sélection)
         self.deck_filter_rarity = CheckableComboBox("Toutes raretés")
-        self.deck_filter_rarity.setFixedWidth(110)
+        self.deck_filter_rarity.setFixedWidth(150)
         self.deck_filter_rarity.add_items(["mythic", "rare", "uncommon", "common"])
         self.deck_filter_rarity.selection_changed.connect(self._apply_filters)
         dk_header.addWidget(QLabel("Rareté:"))
         dk_header.addWidget(self.deck_filter_rarity)
 
         self.deck_filter_color = CheckableComboBox("Toutes couleurs")
-        self.deck_filter_color.setFixedWidth(110)
+        self.deck_filter_color.setFixedWidth(150)
         self.deck_filter_color.add_items(["W", "U", "B", "R", "G", "C"])
         self.deck_filter_color.selection_changed.connect(self._apply_filters)
         dk_header.addWidget(QLabel("Couleur:"))
@@ -469,42 +474,46 @@ class BuildTab(QWidget):
     def _show_context_menu(self, pos, source: str):
         if source == "deck":
             row = self.deck_table.rowAt(pos.y())
-            target = self.deck_cards_data
             table = self.deck_table
+            card = self._get_deck_card_by_row(row)
         else:
             row = self.deck_found_table.rowAt(pos.y())
-            target = self.filtered_eventual_cards
             table = self.deck_found_table
-        if row is None or row < 0 or row >= len(target):
+            card = self._get_eventual_card_by_row(row)
+        if not card:
             return
         menu = QMenu(self)
         action_img = menu.addAction("🖼  Voir l'image de la carte")
         action = menu.exec_(table.mapToGlobal(pos))
         if action == action_img:
             provider = getattr(self, "_external_provider", None)
-            open_card_image_dialog(self, target[row], provider)
+            open_card_image_dialog(self, card, provider)
 
     def _on_table_double_click(self, source: str):
         if source == "eventual":
             row = self.deck_found_table.currentRow()
-            if 0 <= row < len(self.filtered_eventual_cards):
+            card = self._get_eventual_card_by_row(row)
+            if card:
                 provider = getattr(self, "_external_provider", None)
-                open_card_image_dialog(self, self.filtered_eventual_cards[row], provider)
+                open_card_image_dialog(self, card, provider)
         elif source == "deck":
             row = self.deck_table.currentRow()
-            if 0 <= row < len(self.deck_cards_data):
+            card = self._get_deck_card_by_row(row)
+            if card:
                 provider = getattr(self, "_external_provider", None)
-                open_card_image_dialog(self, self.deck_cards_data[row], provider)
+                open_card_image_dialog(self, card, provider)
 
     def _update_preview_from_selection(self):
         row = self.deck_table.currentRow()
-        pix = self.card_index_to_pixmap.get(row)
+        source_idx = self._get_source_index_from_row(self.deck_table, row)
+        pix = self.card_index_to_pixmap.get(source_idx) if source_idx is not None else None
         if pix:
             self.stats_panel.set_commander_preview(pix)
 
     def _scroll_to_selected_image(self):
         row = self.deck_table.currentRow()
-        widget = self.card_index_to_widget.get(row)
+        source_idx = self._get_source_index_from_row(self.deck_table, row)
+        widget = self.card_index_to_widget.get(source_idx) if source_idx is not None else None
         if widget:
             self.deck_images_area.ensureWidgetVisible(widget, 20, 20)
 
@@ -536,6 +545,7 @@ class BuildTab(QWidget):
             rank = card.get("edhrec_rank", "")
 
             col0 = QTableWidgetItem(card.get("name", ""))
+            col0.setData(Qt.UserRole, row)
             self.deck_found_table.setItem(row, 0, col0)
 
             col1 = QTableWidgetItem(_fmt_colors(color_tokens))
@@ -572,6 +582,8 @@ class BuildTab(QWidget):
     def set_deck_cards(self, cards: List[Dict]):
         self.deck_cards_data = cards or []
         self._original_deck_cards = self.deck_cards_data.copy()
+        for idx, card in enumerate(self._original_deck_cards):
+            card["_source_index"] = idx
         self.cards_data = self.deck_cards_data
         self.filtered_deck_cards = self.deck_cards_data
 
@@ -603,6 +615,7 @@ class BuildTab(QWidget):
             role_label = _normalize_role_label(str(card.get("role", "") or "—"))
 
             col0 = QTableWidgetItem(card.get("name", ""))
+            col0.setData(Qt.UserRole, int(card.get("_source_index", row)))
             self.deck_table.setItem(row, 0, col0)
 
             col1 = QTableWidgetItem(card.get("types", "") or "—")
@@ -644,6 +657,8 @@ class BuildTab(QWidget):
         """Applique tous les filtres combinés (rôle, set, rareté)."""
         if not self.cards_data:
             return
+
+        source_cards = self._original_deck_cards or self.cards_data
         
         # Récupérer les valeurs des filtres
         role = self.deck_filter_role.currentText()
@@ -652,8 +667,17 @@ class BuildTab(QWidget):
         selected_rarities = self.deck_filter_rarity.get_checked_items()
         selected_colors = self.deck_filter_color.get_checked_items()
         
+        selected_rarities_lower = {r.lower() for r in selected_rarities}
         visible = []
-        for idx, card in enumerate(self.cards_data):
+        visible_source_indices: List[int] = []
+
+        for row in range(self.deck_table.rowCount()):
+            source_idx = self._get_source_index_from_row(self.deck_table, row)
+            if source_idx is None or source_idx < 0 or source_idx >= len(source_cards):
+                self.deck_table.setRowHidden(row, True)
+                continue
+
+            card = source_cards[source_idx]
             keep = True
             card_role = _normalize_role_label(str(card.get("role", "") or ""))
             
@@ -671,7 +695,7 @@ class BuildTab(QWidget):
             # Filtre rareté (si sélection)
             if keep and selected_rarities:
                 card_rarity = card.get("rarity", "").lower()
-                if card_rarity not in [r.lower() for r in selected_rarities]:
+                if card_rarity not in selected_rarities_lower:
                     keep = False
 
             if keep and selected_colors:
@@ -679,14 +703,13 @@ class BuildTab(QWidget):
                 if not any(color in card_colors for color in selected_colors):
                     keep = False
             
-            self.deck_table.setRowHidden(idx, not keep)
-            widget = self.card_index_to_widget.get(idx)
-            if widget:
-                widget.setVisible(keep)
+            self.deck_table.setRowHidden(row, not keep)
             if keep:
                 visible.append(card)
+                visible_source_indices.append(source_idx)
         
         self.filtered_deck_cards = visible
+        self._reflow_visible_deck_images(visible_source_indices)
 
     def update_role_filter_options(self):
         """Met à jour les options des filtres rôle et set."""
@@ -811,6 +834,47 @@ class BuildTab(QWidget):
             if w:
                 w.setParent(None)
 
+    def _get_source_index_from_row(self, table: QTableWidget, row: int) -> Optional[int]:
+        if row < 0:
+            return None
+        item = table.item(row, 0)
+        if not item:
+            return None
+        data = item.data(Qt.UserRole)
+        try:
+            return int(data)
+        except (TypeError, ValueError):
+            return None
+
+    def _get_deck_card_by_row(self, row: int) -> Optional[Dict]:
+        source_idx = self._get_source_index_from_row(self.deck_table, row)
+        source_cards = self._original_deck_cards or self.cards_data
+        if source_idx is None or source_idx < 0 or source_idx >= len(source_cards):
+            return None
+        return source_cards[source_idx]
+
+    def _get_eventual_card_by_row(self, row: int) -> Optional[Dict]:
+        source_idx = self._get_source_index_from_row(self.deck_found_table, row)
+        if source_idx is None or source_idx < 0 or source_idx >= len(self.filtered_eventual_cards):
+            return None
+        return self.filtered_eventual_cards[source_idx]
+
+    def _reflow_visible_deck_images(self, visible_source_indices: List[int]):
+        while self.deck_images_grid.count():
+            self.deck_images_grid.takeAt(0)
+
+        for widget in self.card_index_to_widget.values():
+            widget.setVisible(False)
+
+        col_count = getattr(self, "_deck_images_col_count", 4)
+        for pos, source_idx in enumerate(visible_source_indices):
+            widget = self.card_index_to_widget.get(source_idx)
+            if not widget:
+                continue
+            widget.setVisible(True)
+            r, c_col = divmod(pos, col_count)
+            self.deck_images_grid.addWidget(widget, r, c_col)
+
     def show_deck_images(self, cards_data, external_provider):
         from PySide6.QtWidgets import QMessageBox
         reply = QMessageBox.question(
@@ -828,7 +892,10 @@ class BuildTab(QWidget):
         self.card_index_to_widget = {}
         self.card_index_to_pixmap = {}
         col_count = 4
+        self._deck_images_col_count = col_count
         total = len(cards_data)
+        for idx, card in enumerate(cards_data):
+            card.setdefault("_source_index", idx)
         self.cards_data = list(cards_data)
         self.roles_available = {str(c.get("role", "")).strip() for c in cards_data if c.get("role")}
         self.update_role_filter_options()
@@ -848,23 +915,91 @@ class BuildTab(QWidget):
             if parent:
                 scryfall_sync = getattr(parent, 'scryfall_sync', None)
 
+        image_url_cache: Dict[str, Optional[str]] = {}
+        image_url_cache_lock = Lock()
+        scryfall_api_lock = Lock()
+        last_scryfall_api_call = [0.0]
+
+        def _is_uuid_like(identifier: str) -> bool:
+            value = str(identifier or "").strip().lower()
+            return len(value) in (32, 36) and all(c in "0123456789abcdef-" for c in value)
+
+        def _get_exact_print_image_url(card: Dict) -> Optional[str]:
+            if not external_provider:
+                return None
+
+            set_code = str(card.get("set_code") or "").strip()
+            set_name = str(card.get("set_name") or "").strip()
+            collector_number = str(card.get("collector_number") or "").strip()
+            if not collector_number:
+                return None
+
+            with scryfall_api_lock:
+                elapsed = time.time() - last_scryfall_api_call[0]
+                if elapsed < 0.12:
+                    time.sleep(0.12 - elapsed)
+
+                url = external_provider.get_image_url_for_exact_print(
+                    set_code,
+                    collector_number,
+                    set_name=set_name,
+                )
+                last_scryfall_api_call[0] = time.time()
+                return url
+
+        def _resolve_image_url(card: Dict) -> Optional[str]:
+            card_name = str(card.get("name") or "").strip()
+            scryfall_id = str(card.get("scryfall_id") or "").strip()
+            set_code = str(card.get("set_code") or "").strip().lower()
+            collector_number = str(card.get("collector_number") or "").strip().lower()
+            base_url = str(card.get("image_url") or "").strip()
+
+            cache_key = f"{card_name}|{scryfall_id}|{set_code}|{collector_number}|{base_url}"
+            with image_url_cache_lock:
+                if cache_key in image_url_cache:
+                    return image_url_cache[cache_key]
+
+            url = base_url or None
+            has_exact_print = bool(set_code and collector_number)
+            has_precise_scryfall_id = _is_uuid_like(scryfall_id)
+
+            # Cas fiable: l'identifiant Scryfall pointe déjà vers un printing exact.
+            if has_precise_scryfall_id:
+                if not url and scryfall_sync:
+                    url = scryfall_sync.get_image_url(scryfall_id=scryfall_id, card_name=card_name)
+                if not url and external_provider:
+                    try:
+                        url = external_provider.get_image_url_from_scryfall(scryfall_id)
+                    except Exception:
+                        url = None
+            else:
+                # Cas ambigu (ex: fallback CardNexus): on ne consulte l'API que si
+                # on a set + collector_number pour vérifier/corriger l'impression.
+                if has_exact_print:
+                    try:
+                        exact_url = _get_exact_print_image_url(card)
+                    except Exception:
+                        exact_url = None
+
+                    if exact_url and (not url or url != exact_url):
+                        url = exact_url
+
+                if not url and scryfall_sync:
+                    url = scryfall_sync.get_image_url(card_name=card_name)
+
+            with image_url_cache_lock:
+                image_url_cache[cache_key] = url
+            return url
+
         def fetch_image(idx_card):
-            """Télécharge une image (scryfall.io n'a PAS de rate limit)."""
+            """Télécharge une image en limitant les appels API Scryfall aux cas nécessaires."""
             idx, card = idx_card
             try:
-                # Priorité 1: URL de la collection
-                url = card.get("image_url")
-                # Priorité 2: Bulk data local (pas d'appel API)
-                if not url and scryfall_sync:
-                    url = scryfall_sync.get_image_url(
-                        scryfall_id=card.get("scryfall_id", ""),
-                        card_name=card.get("name", "")
-                    )
-                # Priorité 3: API Scryfall (fallback)
-                if not url and card.get("scryfall_id"):
-                    url = external_provider.get_image_url_from_scryfall(card.get("scryfall_id"))
+                url = _resolve_image_url(card)
                 if not url:
                     return idx, card, None
+
+                card["image_url"] = url
 
                 resp = requests.get(url, timeout=10)
                 resp.raise_for_status()
@@ -872,7 +1007,7 @@ class BuildTab(QWidget):
             except Exception:
                 return idx, card, None
 
-        # Chargement parallèle avec 8 workers (scryfall.io n'a pas de rate limit)
+        # Chargement parallèle des images (HTTP vers scryfall.io)
         results = []
         with ThreadPoolExecutor(max_workers=8) as executor:
             futures = {executor.submit(fetch_image, (i, c)): i for i, c in enumerate(cards_data)}
@@ -924,6 +1059,8 @@ class BuildTab(QWidget):
         self.cards_data = filtered
         self.filtered_deck_cards = filtered
         self._populate_deck_table(filtered)
+        self.update_role_filter_options()
+        self._apply_filters()
         self.stats_panel.show_mana_filter(clicked_cmc)
 
     def reset_mana_filter(self):
@@ -934,6 +1071,8 @@ class BuildTab(QWidget):
         self.cards_data = self.deck_cards_data
         self.filtered_deck_cards = self.deck_cards_data
         self._populate_deck_table(self.deck_cards_data)
+        self.update_role_filter_options()
+        self._apply_filters()
         self.stats_panel.show_mana_filter(None)
 
     def get_commander_name(self) -> str:

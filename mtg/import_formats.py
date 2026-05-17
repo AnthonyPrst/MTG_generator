@@ -212,23 +212,54 @@ class CardNexusFormat(ImportFormat):
                     break
         
         return oracle_id, scryfall_id, types, colors, set_code, collector_number, image
+
+    @staticmethod
+    def _looks_like_set_code(value: str) -> bool:
+        token = str(value or "").strip()
+        return bool(token) and len(token) <= 6 and token.replace("-", "").isalnum()
     
     def process_row(self, row: Dict[str, str], external_provider, bulk_provider=None) -> Dict[str, Any]:
         card_name = self.get_column_value(row, 'name')
-        set_code = ""  # CardNexus n'a pas de set_code court
         set_name = self.get_column_value(row, 'expansion')
+        set_code_input = set_name if self._looks_like_set_code(set_name) else ""
+        resolved_set_code = ""
+        if external_provider:
+            resolved_set_code = external_provider.resolve_set_code(set_code=set_code_input, set_name=set_name)
+        elif set_code_input:
+            resolved_set_code = set_code_input.lower()
         collector_number = self.get_column_value(row, 'printNumber')
         
         oracle_id, image, types, colors, scryfall_id, set_code_from_api, collector_number_from_api = "", "", "", [], "", "", ""
-        
-        # 1. Essayer le bulk data local
+        matched_exact_print = False
+
+        # 1. Essayer le bulk data local (rapide)
         if bulk_provider:
             card_data = bulk_provider.get_card_for_import(card_name=card_name)
             if card_data:
                 oracle_id, scryfall_id, types, colors, set_code_from_api, collector_number_from_api, image = self._extract_from_card_data(card_data)
+
+                if collector_number:
+                    matched_exact_print = (
+                        bool(set_code_from_api)
+                        and bool(collector_number_from_api)
+                        and bool(resolved_set_code)
+                        and set_code_from_api.lower() == resolved_set_code.lower()
+                        and collector_number_from_api.strip().lower() == collector_number.strip().lower()
+                    )
+
+        # 2. API exact print seulement si nécessaire
+        if not matched_exact_print and external_provider and collector_number and resolved_set_code:
+            exact_card_data = external_provider.get_card_for_exact_print(
+                set_code=resolved_set_code,
+                collector_number=collector_number,
+                set_name=set_name,
+            )
+            if exact_card_data:
+                oracle_id, scryfall_id, types, colors, set_code_from_api, collector_number_from_api, image = self._extract_from_card_data(exact_card_data)
+                matched_exact_print = bool(scryfall_id)
         
-        # 2. Fallback API seulement si bulk n'a pas trouvé
-        if not types and external_provider:
+        # 3. Fallback API seulement si aucun résultat exploitable
+        if not matched_exact_print and not types and external_provider:
             try:
                 card_data = external_provider.get_scryfall_data(card_name)
                 oracle_id, scryfall_id, types, colors, set_code_from_api, collector_number_from_api, image = self._extract_from_card_data(card_data)
@@ -238,11 +269,11 @@ class CardNexusFormat(ImportFormat):
         if not colors and types and 'Land' not in types:
             colors = ['colorless']
 
-        matched_exact_print = (
+        matched_exact_print = matched_exact_print or (
             bool(scryfall_id)
             and bool(set_code_from_api)
             and bool(collector_number_from_api)
-            and set_code_from_api.lower() == set_code.lower()
+            and set_code_from_api.lower() == resolved_set_code.lower()
             and collector_number_from_api.strip().lower() == collector_number.strip().lower()
         )
 
@@ -257,7 +288,7 @@ class CardNexusFormat(ImportFormat):
             ]
             scryfall_id = "::".join(fallback_key_parts)
 
-        effective_set_code = set_code_from_api if matched_exact_print else set_code
+        effective_set_code = set_code_from_api if matched_exact_print else resolved_set_code
         effective_collector_number = collector_number_from_api if matched_exact_print else collector_number
         
         return {

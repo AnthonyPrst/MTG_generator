@@ -109,11 +109,22 @@ DARK_THEME = """
     }
     QComboBox::drop-down {
         border: none;
+        border-left: 1px solid #30363d;
+        background: #161b22;
+        border-top-right-radius: 6px;
+        border-bottom-right-radius: 6px;
         width: 24px;
     }
     QComboBox::down-arrow {
-        width: 12px;
-        height: 12px;
+        width: 0px;
+        height: 0px;
+        border-left: 5px solid transparent;
+        border-right: 5px solid transparent;
+        border-top: 7px solid #8b949e;
+        margin-right: 7px;
+    }
+    QComboBox::down-arrow:on {
+        border-top-color: #e6edf3;
     }
     QComboBox QAbstractItemView {
         background: #161b22;

@@ -133,6 +133,23 @@ class CollectionManager:
 
             current_row = 0
             self.external_data_priovider = ExternalDataProvider()
+            try:
+                cursor.execute(
+                    """
+                    SELECT DISTINCT LOWER(TRIM(set_name)) as set_name, LOWER(TRIM(set_code)) as set_code
+                    FROM cards
+                    WHERE TRIM(COALESCE(set_name, '')) != ''
+                      AND TRIM(COALESCE(set_code, '')) != ''
+                    """
+                )
+                local_set_map = {
+                    row["set_name"]: row["set_code"]
+                    for row in cursor.fetchall()
+                    if row["set_name"] and row["set_code"]
+                }
+                self.external_data_priovider.seed_set_code_cache(local_set_map)
+            except Exception:
+                pass
             
             # Traiter chaque ligne avec le format approprié
             for row in reader:
@@ -607,6 +624,7 @@ class CollectionManager:
                     # Données supplémentaires pour filtres
                     "set_code": card_local.get("set_code", ""),
                     "set_name": card_local.get("set_name", ""),
+                    "collector_number": card_local.get("collector_number", ""),
                     "rarity": card_local.get("rarity", ""),
                 })
 

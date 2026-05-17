@@ -110,20 +110,26 @@ class DeckBuilder:
 
     def _get_card_cmc(self, card_info: Dict[str, Any]) -> float:
         scryfall_id = card_info.get("scryfall_id")
+        card_name = card_info.get("name", "")
         cmc = None
-        if scryfall_id and not str(scryfall_id).startswith("cardnexus::"):
-            cmc = self.app.external_provider.get_card_cmc(scryfall_id)
 
-        if cmc is None:
-            card_name = card_info.get("name", "")
-            bulk_provider = getattr(self.app.window, "scryfall_sync", None)
-            bulk_data = bulk_provider.get_card_for_import(card_name=card_name) if (card_name and bulk_provider) else None
+        # Priorité au bulk local (offline) pour éviter les appels API pendant le build.
+        bulk_provider = getattr(self.app.window, "scryfall_sync", None)
+        if bulk_provider and (scryfall_id or card_name):
+            bulk_data = bulk_provider.get_card_for_import(
+                scryfall_id=str(scryfall_id or ""),
+                card_name=card_name,
+            )
             if bulk_data:
                 raw_cmc = bulk_data.get("cmc")
                 try:
                     cmc = float(raw_cmc) if raw_cmc is not None else None
                 except (TypeError, ValueError):
                     cmc = None
+
+        # Fallback API seulement si bulk indisponible/incomplet.
+        if cmc is None and scryfall_id and not str(scryfall_id).startswith("cardnexus::"):
+            cmc = self.app.external_provider.get_card_cmc(scryfall_id)
 
         return float(cmc or 0)
 
@@ -425,6 +431,7 @@ class DeckBuilder:
                     # Données pour filtres
                     "set_code": info.get("set_code", ""),
                     "set_name": info.get("set_name", ""),
+                    "collector_number": info.get("collector_number", ""),
                     "rarity": info.get("rarity", ""),
                 }
                 list_info_selected.append(items)

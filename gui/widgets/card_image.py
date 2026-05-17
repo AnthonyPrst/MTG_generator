@@ -49,6 +49,9 @@ class HolographicCard(QLabel):
 
         self._update_display()
 
+    def _draw_tilted_base(self, painter: QPainter):
+        painter.drawPixmap(0, 0, self._base_pixmap)
+
     def _update_display(self):
         """Met à jour l'affichage avec l'effet de brillance."""
         if self._base_pixmap.isNull():
@@ -62,18 +65,21 @@ class HolographicCard(QLabel):
         painter.setRenderHint(QPainter.Antialiasing)
         painter.setRenderHint(QPainter.SmoothPixmapTransform)
 
-        # Dessiner l'image de base
-        painter.drawPixmap(0, 0, self._base_pixmap)
+        # Dessiner l'image de base avec tilt 3D simulé
+        self._draw_tilted_base(painter)
 
         # Effet de brillance holographique
         w, h = result.width(), result.height()
-        shine_center_x = int(self._shine_x * w)
-        shine_center_y = int(self._shine_y * h)
+        shine_center_x = int(max(0.0, min(1.0, self._shine_x)) * w)
+        shine_center_y = int(max(0.0, min(1.0, self._shine_y)) * h)
+        span = 120
 
         # Gradient radial simulé avec un gradient linéaire diagonal
         gradient = QLinearGradient(
-            shine_center_x - 100, shine_center_y - 100,
-            shine_center_x + 100, shine_center_y + 100
+            shine_center_x - span,
+            shine_center_y - span,
+            shine_center_x + span,
+            shine_center_y + span,
         )
         gradient.setColorAt(0.0, QColor(255, 255, 255, 0))
         gradient.setColorAt(0.4, QColor(255, 255, 255, 60))
@@ -86,34 +92,34 @@ class HolographicCard(QLabel):
         painter.setPen(Qt.NoPen)
         painter.drawRect(0, 0, w, h)
 
+        sweep = QLinearGradient(
+            shine_center_x - span * 1.5,
+            shine_center_y + span * 0.4,
+            shine_center_x + span * 1.5,
+            shine_center_y - span * 0.4,
+        )
+        sweep.setColorAt(0.0, QColor(120, 220, 255, 0))
+        sweep.setColorAt(0.5, QColor(120, 220, 255, 55))
+        sweep.setColorAt(1.0, QColor(255, 130, 255, 0))
+        painter.setBrush(QBrush(sweep))
+        painter.drawRect(0, 0, w, h)
+
         painter.end()
         self.setPixmap(result)
+
+    def enterEvent(self, event):
+        super().enterEvent(event)
 
     def mouseMoveEvent(self, event):
         """Calcule la rotation et le reflet selon la position de la souris."""
         pos = event.pos()
         w, h = self.width(), self.height()
 
-        # Normaliser la position (-1 à 1)
-        norm_x = (pos.x() / w - 0.5) * 2
-        norm_y = (pos.y() / h - 0.5) * 2
-
-        # Rotation (max ±15 degrés)
-        self._rotation_y = norm_x * 15
-        self._rotation_x = -norm_y * 15
-
         # Position du reflet
         self._shine_x = pos.x() / w
         self._shine_y = pos.y() / h
 
-        # Appliquer la transformation CSS-like via stylesheet
-        self._apply_transform()
         self._update_display()
-
-        # Ombre dynamique
-        shadow_x = norm_x * 20
-        shadow_y = 10 + norm_y * 10
-        self._shadow.setOffset(shadow_x, shadow_y)
 
     def leaveEvent(self, event):
         """Reset la rotation quand la souris quitte."""
@@ -121,17 +127,13 @@ class HolographicCard(QLabel):
         self._rotation_y = 0
         self._shine_x = 0.5
         self._shine_y = 0.5
-        self._apply_transform()
         self._update_display()
         self._shadow.setOffset(0, 10)
+        super().leaveEvent(event)
 
     def _apply_transform(self):
         """Applique la transformation 3D via stylesheet (perspective)."""
-        # PySide6 ne supporte pas les transforms 3D CSS directement,
-        # on simule avec un léger scale et une ombre
-        scale = 1.0 + abs(self._rotation_x) * 0.002 + abs(self._rotation_y) * 0.002
-        # On ne peut pas faire de vraie rotation 3D en QSS, mais l'effet visuel
-        # est créé par le gradient de brillance qui bouge
+        self._shadow.setBlurRadius(40)
 
 
 class HolographicCardDialog(QDialog):
