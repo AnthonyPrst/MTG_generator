@@ -12,6 +12,10 @@ Motivation : pouvoir tester de nouveaux commandants sans racheter des cartes. L�
 - Paramétrage du nombre de cartes par rôle et du nombre de terrains (min/max).
 - Liste des cartes trouvées dans la collection et deck généré avec score moyen.
 
+## Changelog
+
+Voir `CHANGELOG.md` pour l’historique détaillé des versions.
+
 ## Prérequis
 
 - Python 3.11+ recommandé

@@ -142,6 +142,7 @@ class BuildTab(QWidget):
     commander_changed = Signal(str)
     strategy_changed = Signal(str)
     budget_changed = Signal(int)
+    pauper_changed = Signal(int)
     role_filter_changed = Signal(str)
     deck_search_changed = Signal(str)
     deck_search_enter = Signal()
@@ -165,6 +166,7 @@ class BuildTab(QWidget):
         self._mana_curve_data: Dict[int, int] = {}
         self._original_deck_cards: List[Dict] = []
         self._cmc_filter: Optional[int] = None
+        self._commander_candidates: List[Dict] = []
 
         self._build_ui()
 
@@ -196,7 +198,7 @@ class BuildTab(QWidget):
         """Sidebar gauche : commandant, stratégie, actions."""
         sidebar = QWidget()
         sidebar.setObjectName("sidebar")
-        sidebar.setFixedWidth(320)
+        # sidebar.setFixedWidth(320)
         layout = QVBoxLayout(sidebar)
         layout.setContentsMargins(16, 16, 16, 16)
         layout.setSpacing(16)
@@ -212,6 +214,26 @@ class BuildTab(QWidget):
         self.commander_input.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.commander_input.currentTextChanged.connect(self.commander_changed)
         g_layout.addWidget(self.commander_input)
+
+        commander_filters = QHBoxLayout()
+        commander_filters.setSpacing(8)
+
+        self.commander_filter_owned = QCheckBox("Collection")
+        self.commander_filter_owned.setChecked(True)
+        self.commander_filter_owned.stateChanged.connect(self._on_commander_filter_changed)
+        commander_filters.addWidget(self.commander_filter_owned)
+
+        self.commander_filter_missing = QCheckBox("Hors collection")
+        self.commander_filter_missing.setChecked(True)
+        self.commander_filter_missing.stateChanged.connect(self._on_commander_filter_changed)
+        commander_filters.addWidget(self.commander_filter_missing)
+        commander_filters.addStretch()
+        g_layout.addLayout(commander_filters)
+
+        self.commander_filter_hint = QLabel("Vert = dans la collection  ·  Gris = non possédé")
+        self.commander_filter_hint.setWordWrap(True)
+        self.commander_filter_hint.setStyleSheet("color: #8b949e; font-size: 11px;")
+        g_layout.addWidget(self.commander_filter_hint)
 
         self.search_commander_btn = QPushButton("🔍  Rechercher les decks")
         self.search_commander_btn.setObjectName("accent")
@@ -237,8 +259,12 @@ class BuildTab(QWidget):
         s_layout.addWidget(self.strategy_info)
 
         self.budget_checkbox = QCheckBox("Mode Budget  (Communes / Peu communes)")
-        self.budget_checkbox.stateChanged.connect(self.budget_changed)
+        self.budget_checkbox.stateChanged.connect(self._on_budget_checkbox_changed)
         s_layout.addWidget(self.budget_checkbox)
+
+        self.pauper_checkbox = QCheckBox("Mode Pauper  (Communes uniquement)")
+        self.pauper_checkbox.stateChanged.connect(self._on_pauper_checkbox_changed)
+        s_layout.addWidget(self.pauper_checkbox)
 
         layout.addWidget(grp_strategy)
 
@@ -522,13 +548,84 @@ class BuildTab(QWidget):
     # ─────────────────────────────────────────────────────────────────────────
 
     def refresh_commander_candidates(self, candidates: list):
-        current = self.commander_input.currentText()
+        normalized_candidates = []
+        for candidate in candidates or []:
+            if isinstance(candidate, dict):
+                name = str(candidate.get("name") or "").strip()
+                if not name:
+                    continue
+                normalized_candidates.append({
+                    "name": name,
+                    "in_collection": bool(candidate.get("in_collection")),
+                })
+            else:
+                name = str(candidate or "").strip()
+                if not name:
+                    continue
+                normalized_candidates.append({
+                    "name": name,
+                    "in_collection": False,
+                })
+
+        self._commander_candidates = normalized_candidates
+        self._apply_commander_candidate_filters(preferred_name=self.commander_input.currentText())
+
+    def _on_commander_filter_changed(self, _state: int):
+        if not self.commander_filter_owned.isChecked() and not self.commander_filter_missing.isChecked():
+            sender = self.sender()
+            if sender is not None:
+                sender.blockSignals(True)
+                sender.setChecked(True)
+                sender.blockSignals(False)
+        self._apply_commander_candidate_filters(preferred_name=self.commander_input.currentText())
+
+    def _on_budget_checkbox_changed(self, state: int):
+        if state != Qt.Checked and self.pauper_checkbox.isChecked():
+            self.pauper_checkbox.blockSignals(True)
+            self.pauper_checkbox.setChecked(False)
+            self.pauper_checkbox.blockSignals(False)
+            self.pauper_changed.emit(Qt.Unchecked)
+        self.budget_changed.emit(state)
+
+    def _on_pauper_checkbox_changed(self, state: int):
+        if state == Qt.Checked and not self.budget_checkbox.isChecked():
+            self.budget_checkbox.blockSignals(True)
+            self.budget_checkbox.setChecked(True)
+            self.budget_checkbox.blockSignals(False)
+            self.budget_changed.emit(Qt.Checked)
+        self.pauper_changed.emit(state)
+
+    def _apply_commander_candidate_filters(self, preferred_name: str = ""):
+        preferred_name = str(preferred_name or "").strip()
+        show_owned = self.commander_filter_owned.isChecked()
+        show_missing = self.commander_filter_missing.isChecked()
+
+        visible_candidates = [
+            candidate
+            for candidate in self._commander_candidates
+            if (candidate.get("in_collection") and show_owned)
+            or (not candidate.get("in_collection") and show_missing)
+        ]
+
         self.commander_input.blockSignals(True)
         self.commander_input.clear()
-        self.commander_input.addItems(candidates)
-        idx = self.commander_input.findText(current, Qt.MatchFixedString | Qt.MatchCaseSensitive)
-        self.commander_input.setCurrentIndex(idx if idx >= 0 else 0)
-        completer = QCompleter(candidates, self)
+        for candidate in visible_candidates:
+            self.commander_input.addItem(candidate["name"])
+            index = self.commander_input.count() - 1
+            color = QColor("#3fb950") if candidate.get("in_collection") else QColor("#8b949e")
+            tooltip = "Disponible dans la collection" if candidate.get("in_collection") else "Non disponible dans la collection"
+            self.commander_input.setItemData(index, QBrush(color), Qt.ForegroundRole)
+            self.commander_input.setItemData(index, tooltip, Qt.ToolTipRole)
+
+        idx = self.commander_input.findText(preferred_name, Qt.MatchFixedString | Qt.MatchCaseSensitive)
+        if idx >= 0:
+            self.commander_input.setCurrentIndex(idx)
+        elif preferred_name:
+            self.commander_input.setEditText(preferred_name)
+        elif self.commander_input.count() > 0:
+            self.commander_input.setCurrentIndex(0)
+
+        completer = QCompleter([candidate["name"] for candidate in visible_candidates], self)
         completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
         self.commander_input.setCompleter(completer)
         self.commander_input.blockSignals(False)
@@ -1076,13 +1173,22 @@ class BuildTab(QWidget):
         self.stats_panel.show_mana_filter(None)
 
     def get_commander_name(self) -> str:
-        return self.commander_input.currentText()
+        return self.commander_input.currentText().strip()
+
+    def is_known_commander_name(self, name: str) -> bool:
+        normalized = str(name or "").strip().lower()
+        if not normalized:
+            return False
+        return any(candidate["name"].strip().lower() == normalized for candidate in self._commander_candidates)
 
     def get_strategy_name(self) -> str:
         return self.strategy_combo.currentText()
 
     def is_budget_mode(self) -> bool:
         return self.budget_checkbox.isChecked()
+
+    def is_pauper_mode(self) -> bool:
+        return self.pauper_checkbox.isChecked()
 
     def set_recommendations_text(self, text: str):
         self.recommendations_text.setText(text)

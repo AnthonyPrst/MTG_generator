@@ -162,7 +162,7 @@ class MainWindow(QMainWindow):
         root.addWidget(self.tabs)
 
         # ── Onglet Construction ───────────────────────────────────────────
-        candidates = self.app.collection_manager.get_commander_candidates()
+        candidates = self.app.collection_manager.get_commander_candidates(get_all=True)
         self.build_tab = BuildTab(
             self.app.collection_manager,
             self.strategy_manager,
@@ -215,6 +215,7 @@ class MainWindow(QMainWindow):
         bt.commander_changed.connect(self._update_commander_info)
         bt.strategy_changed.connect(self._on_strategy_changed)
         bt.budget_changed.connect(self._on_budget_changed)
+        bt.pauper_changed.connect(self._on_pauper_changed)
         bt.role_filter_changed.connect(bt.apply_role_filter)
         bt.deck_search_changed.connect(bt.filter_deck_list)
         bt.deck_search_enter.connect(bt.select_first_deck_match)
@@ -387,7 +388,7 @@ class MainWindow(QMainWindow):
         self.collection_tab.refresh_collection_list()
 
     def refresh_commander_candidates(self):
-        candidates = self.app.collection_manager.get_commander_candidates()
+        candidates = self.app.collection_manager.get_commander_candidates(get_all=True)
         self.build_tab.refresh_commander_candidates(candidates)
         current = self.build_tab.get_commander_name()
         self.update_commander_preview(current)
@@ -490,7 +491,7 @@ class MainWindow(QMainWindow):
             self,
             "Format d'import",
             "Import depuis:",
-            ["Détection automatique", "ManaBox - Collection", "CardNexus", "Archidekt", "Moxfield"],
+            ["Détection automatique", "ManaBox - Collection", "CardNexus"],
             0,
             False,
         )
@@ -506,6 +507,9 @@ class MainWindow(QMainWindow):
 
     def update_commander_preview(self, commander_name: str):
         if not commander_name:
+            self.build_tab.stats_panel.set_commander_preview(None)
+            return
+        if not self.build_tab.is_known_commander_name(commander_name):
             self.build_tab.stats_panel.set_commander_preview(None)
             return
 
@@ -539,15 +543,49 @@ class MainWindow(QMainWindow):
                     urls.append(candidate)
             return urls
 
+        def _append_image_urls_from_card_data(data: Optional[Dict], target_urls: list):
+            if not data:
+                return
+            if "image_uris" in data:
+                iu = data["image_uris"] or {}
+                candidate = iu.get("normal") or iu.get("large") or iu.get("png")
+                if candidate and candidate not in target_urls:
+                    target_urls.append(candidate)
+            for face in data.get("card_faces", []) or []:
+                iu = face.get("image_uris") or {}
+                candidate = iu.get("normal") or iu.get("large") or iu.get("png")
+                if candidate and candidate not in target_urls:
+                    target_urls.append(candidate)
+
         card = self.app.collection_manager.get_card(commander_name)
         scryfall_id = card.get("scryfall_id") if card else None
         urls: list = []
         if card and card.get("image_url"):
             urls.append(card["image_url"])
+
+        bulk_card = None
+        try:
+            if getattr(self, "scryfall_sync", None) and self.scryfall_sync.is_bulk_available():
+                bulk_card = self.scryfall_sync.get_card_for_import(
+                    scryfall_id=scryfall_id or "",
+                    card_name=commander_name,
+                )
+        except Exception:
+            bulk_card = None
+
+        _append_image_urls_from_card_data(bulk_card, urls)
+
         if scryfall_id:
             for u in _get_face_urls(scryfall_id):
                 if u not in urls:
                     urls.append(u)
+
+        if not urls:
+            try:
+                remote_card = self.app.external_provider.get_scryfall_data(commander_name)
+            except Exception:
+                remote_card = None
+            _append_image_urls_from_card_data(remote_card, urls)
 
         pixmaps = []
         urls.reverse()
@@ -580,9 +618,11 @@ class MainWindow(QMainWindow):
         self.build_tab.stats_panel.set_commander_preview(final_pix)
 
     def _update_commander_info(self, commander_name: str):
-        if not commander_name:
+        if not commander_name or not self.build_tab.is_known_commander_name(commander_name):
             self._commander_info_timer.stop()
             self.build_tab.stats_panel.set_commander_info("", "")
+            self.build_tab.set_recommendations_text("Sélectionnez un commandant")
+            self.build_tab.set_recommendations_visible(False)
             return
         self._pending_commander_name = commander_name
         self._commander_info_timer.start()
@@ -614,6 +654,11 @@ class MainWindow(QMainWindow):
         self.build_tab.stats_panel.set_commander_info(popularity_text, type_text)
 
     def _update_recommendations(self, commander_name: str):
+        if not commander_name or not self.build_tab.is_known_commander_name(commander_name):
+            self.build_tab.set_recommendations_text("Sélectionnez un commandant")
+            self.build_tab.set_recommendations_visible(False)
+            self._current_synergies = []
+            return
         status = self.scryfall_sync.get_cache_status()
         if not status["has_oracle_cards"]:
             self.build_tab.set_recommendations_text(
@@ -710,6 +755,16 @@ class MainWindow(QMainWindow):
         self.strategy_manager.set_budget_mode(enabled)
         if enabled:
             self.statusBar().showMessage("Mode Budget activé", 3000)
+        else:
+            self.statusBar().showMessage("Mode Budget désactivé", 3000)
+
+    def _on_pauper_changed(self, state: int):
+        enabled = state == 2
+        self.strategy_manager.set_pauper_mode(enabled)
+        if enabled:
+            self.statusBar().showMessage("Mode Pauper activé", 3000)
+        else:
+            self.statusBar().showMessage("Mode Pauper désactivé", 3000)
 
     # ─────────────────────────────────────────────────────────────────────
     # Mana curve interactivité

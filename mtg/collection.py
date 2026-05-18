@@ -11,6 +11,7 @@ import logging
 from mtg import constants as cts
 from mtg.external_data import ExternalDataProvider
 from mtg.import_formats import get_import_format, detect_format, get_available_formats
+from mtg.scryfall_sync import ScryfallSyncManager
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +32,7 @@ class CollectionManager:
         if cts.DB_PATH:
             self.db_path = Path(cts.DB_PATH)
         self.conn: Optional[sqlite3.Connection] = None
+        self._scryfall_sync: Optional[ScryfallSyncManager] = None
         
         # Créer le répertoire de la base de données si nécessaire
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -323,12 +325,111 @@ class CollectionManager:
             )
             return [dict(row) for row in cursor.fetchall()]
 
+    def _get_owned_card_names(self) -> Set[str]:
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT DISTINCT LOWER(TRIM(name)) AS name
+                FROM cards
+                WHERE COALESCE(quantity, 0) > 0
+                  AND TRIM(COALESCE(name, '')) != ''
+                """
+            )
+            return {row["name"] for row in cursor.fetchall() if row["name"]}
+
+    def _get_scryfall_sync(self) -> ScryfallSyncManager:
+        if self._scryfall_sync is None:
+            self._scryfall_sync = ScryfallSyncManager()
+        return self._scryfall_sync
+
+    @staticmethod
+    def _is_commander_candidate_from_bulk(card: Dict[str, Any]) -> bool:
+        games = card.get("games") or []
+        if games and "paper" not in games:
+            return False
+
+        legality = str((card.get("legalities") or {}).get("commander") or "").lower()
+        if legality in {"not_legal", "banned"}:
+            return False
+
+        type_lines = [
+            str(card.get("face_type_line") or "").lower(),
+            str(card.get("type_line") or "").lower(),
+        ]
+        oracle_texts = [
+            str(card.get("face_oracle_text") or "").lower(),
+            str(card.get("oracle_text") or "").lower(),
+        ]
+
+        for face in card.get("card_faces") or []:
+            type_lines.append(str(face.get("type_line") or "").lower())
+            oracle_texts.append(str(face.get("oracle_text") or "").lower())
+
+        if any("legendary" in type_line and "creature" in type_line for type_line in type_lines):
+            return True
+
+        if any("legendary enchantment" in type_line and "background" in type_line for type_line in type_lines):
+            return True
+
+        if any("legendary artifact" in type_line and "vehicle" in type_line for type_line in type_lines):
+            return True
+
+        if any("legendary artifact" in type_line and "spacecraft" in type_line for type_line in type_lines):
+            return True
+
+        commander_markers = (
+            "can be your commander",
+            "can be a commander",
+            "can serve as your commander",
+        )
+        return any(marker in oracle_text for oracle_text in oracle_texts for marker in commander_markers)
+
+    def _get_commander_candidates_from_bulk(self) -> List[Dict[str, Any]]:
+        try:
+            scryfall_sync = self._get_scryfall_sync()
+            if not scryfall_sync.is_bulk_available():
+                return []
+            cards = scryfall_sync.load_oracle_cards()
+            owned_names = self._get_owned_card_names()
+        except Exception as exc:
+            logger.warning("Impossible de charger les candidats commandants depuis le bulk Scryfall: %s", exc)
+            return []
+
+        seen = set()
+        candidates = []
+        for card in cards.values():
+            if not self._is_commander_candidate_from_bulk(card):
+                continue
+
+            name = str(card.get("name") or "").strip()
+            if not name:
+                continue
+
+            key = name.lower()
+            if key in seen:
+                continue
+
+            seen.add(key)
+            candidate = dict(card)
+            candidate["in_collection"] = key in owned_names
+            candidates.append(candidate)
+
+        candidates.sort(key=lambda row: (not bool(row.get("in_collection")), row["name"]))
+        return candidates
+
     def get_commander_candidates(self, get_all: bool = False) -> List[Dict[str, Any]]:
         """Récupère les cartes pouvant être des commandants.
         
         Returns:
             Une liste de dictionnaires représentant les cartes légendaires de type créature
         """
+        unique_rows = self._get_commander_candidates_from_bulk()
+        if unique_rows:
+            if get_all:
+                return unique_rows
+            return [row['name'] for row in unique_rows]
+
         with self._get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("""
@@ -346,7 +447,9 @@ class CollectionManager:
                 if key in seen:
                     continue
                 seen.add(key)
-                unique_rows.append(dict(row))
+                row_dict = dict(row)
+                row_dict["in_collection"] = True
+                unique_rows.append(row_dict)
 
             if get_all:
                 return unique_rows

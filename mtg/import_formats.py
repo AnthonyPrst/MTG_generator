@@ -139,40 +139,6 @@ class ManaBoxFormat(ImportFormat):
         }
 
 
-class MoxfieldFormat(ImportFormat):
-    """Format d'import pour Moxfield."""
-    
-    @property
-    def name(self) -> str:
-        return "Moxfield"
-    
-    @property
-    def required_columns(self) -> Set[str]:
-        return {'name', 'scryfall_id', 'colors', 'types', 'quantity'}
-    
-    @property
-    def optional_columns(self) -> Set[str]:
-        return {'set_code', 'set_name', 'collector_number', 'foil', 'rarity', 'condition', 'language'}
-    
-    def process_row(self, row: Dict[str, str], external_provider, bulk_provider=None) -> Dict[str, Any]:
-        return {
-            'name': self.get_column_value(row, 'name'),
-            'colors': self.get_column_value(row, 'colors').upper(),
-            'types': self.get_column_value(row, 'types'),
-            'scryfall_id': self.get_column_value(row, 'scryfall_id'),
-            'oracle_id': '',  # Non disponible dans Moxfield
-            'set_code': self.get_column_value(row, 'set_code'),
-            'set_name': self.get_column_value(row, 'set_name'),
-            'collector_number': self.get_column_value(row, 'collector_number'),
-            'image_url': '',  # Non disponible directement
-            'foil': 1 if self.get_column_value(row, 'foil').lower() == 'foil' else 0,
-            'rarity': self.get_column_value(row, 'rarity'),
-            'quantity': int(self.get_column_value(row, 'quantity', '1')),
-            'card_condition': self.get_column_value(row, 'condition', 'Near Mint'),
-            'language': self.get_column_value(row, 'language', 'English')
-        }
-
-
 class CardNexusFormat(ImportFormat):
     """Format d'import pour CardNexus."""
     
@@ -309,95 +275,10 @@ class CardNexusFormat(ImportFormat):
         }
 
 
-class ArchidektFormat(ImportFormat):
-    """Format d'import pour Archidekt."""
-    
-    @property
-    def name(self) -> str:
-        return "Archidekt"
-    
-    @property
-    def required_columns(self) -> Set[str]:
-        return {'Name', 'Quantity', 'Scryfall ID'}
-    
-    @property
-    def optional_columns(self) -> Set[str]:
-        return {'Edition Code', 'Edition Name', 'Collector Number', 'Finish', 'Rarity', 'Condition', 'Language', 'Purchase Price'}
-    
-    @staticmethod
-    def _extract_from_card_data(card_data: Dict) -> tuple:
-        """Extrait les infos utiles d'un dict Scryfall."""
-        oracle_id = card_data.get('oracle_id', '')
-        types = card_data.get('type_line', '')
-        colors = card_data.get('color_identity', [])
-        set_code = card_data.get('set', '').upper()
-        collector_number = card_data.get('collector_number', '')
-        rarity = card_data.get('rarity', '')
-        image = ''
-        
-        if 'image_uris' in card_data:
-            urls = card_data['image_uris']
-            image = urls.get('normal') or urls.get('large') or urls.get('png', '')
-        
-        faces = card_data.get('card_faces')
-        if faces and not image:
-            for face in faces:
-                urls = face.get('image_uris')
-                if urls:
-                    image = urls.get('normal') or urls.get('large') or urls.get('png', '')
-                    break
-        
-        return oracle_id, types, colors, set_code, collector_number, rarity, image
-    
-    def process_row(self, row: Dict[str, str], external_provider, bulk_provider=None) -> Dict[str, Any]:
-        card_name = self.get_column_value(row, 'Name')
-        scryfall_id = self.get_column_value(row, 'Scryfall ID')
-        
-        oracle_id, image, types, colors, set_code, collector_number, rarity = "", "", "", [], "", "", ""
-        
-        # 1. Essayer le bulk data local
-        if bulk_provider:
-            card_data = bulk_provider.get_card_for_import(
-                scryfall_id=scryfall_id, card_name=card_name
-            )
-            if card_data:
-                oracle_id, types, colors, set_code, collector_number, rarity, image = self._extract_from_card_data(card_data)
-        
-        # 2. Fallback API seulement si bulk n'a pas trouvé
-        if not types and external_provider:
-            try:
-                card_data = external_provider.get_scryfall_data(scryfall_id)
-                oracle_id, types, colors, set_code, collector_number, rarity, image = self._extract_from_card_data(card_data)
-            except Exception as e:
-                logger.warning(f"Impossible de trouver les données pour {card_name}: {e}")
-        
-        if not colors and types and 'Land' not in types:
-            colors = ['colorless']
-        
-        return {
-            'name': card_name,
-            'colors': str(colors),
-            'types': types,
-            'scryfall_id': scryfall_id,
-            'oracle_id': oracle_id,
-            'set_code': set_code,
-            'set_name': self.get_column_value(row, 'Edition Name'),
-            'collector_number': collector_number,
-            'image_url': image,
-            'foil': 0 if self.get_column_value(row, 'Finish').lower() == 'normal' else 1,
-            'rarity': rarity,
-            'quantity': int(self.get_column_value(row, 'Quantity', '1')),
-            'card_condition': self.get_column_value(row, 'Condition', 'Near Mint'),
-            'language': self.get_column_value(row, 'Language', 'English')
-        }
-
-
 # Registre des formats d'import
 IMPORT_FORMATS = {
     "ManaBox - Collection": ManaBoxFormat(),
-    "Moxfield": MoxfieldFormat(),
     "CardNexus": CardNexusFormat(),
-    "Archidekt": ArchidektFormat(),
 }
 
 

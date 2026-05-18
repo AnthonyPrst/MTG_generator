@@ -3,6 +3,7 @@
 import sys
 import argparse
 import time
+import ast
 from pathlib import Path
 from PySide6.QtWidgets import QApplication
 from PySide6.QtGui import QIcon
@@ -40,7 +41,24 @@ class Launcher(object):
         self.collection_manager = CollectionManager()
         self.external_provider = ExternalDataProvider()
         self.excluded_card_names: set[str] = set()
+        self.eventual_owned: list[dict] = []
         self.current_language = "fr"
+
+    @staticmethod
+    def _normalize_color_tokens(raw_colors) -> set[str]:
+        if isinstance(raw_colors, (list, tuple, set)):
+            values = raw_colors
+        else:
+            try:
+                values = ast.literal_eval(raw_colors) if raw_colors else []
+            except Exception:
+                values = str(raw_colors or "").replace("[", "").replace("]", "").replace("'", "").split(",")
+
+        return {
+            str(color).strip().upper()
+            for color in values
+            if str(color).strip() and str(color).strip().lower() != "colorless"
+        }
 
     def import_collection(self):
         """Importe une collection depuis un fichier CSV."""
@@ -164,6 +182,11 @@ class Launcher(object):
             self.window.close_progress()
 
         owned = self.collection_manager.compare_deck_to_collection(cards)
+        commander_colors = self.collection_manager.get_card_colors(commander_name)
+        owned = [
+            card for card in owned
+            if self._normalize_color_tokens(card.get("colors", "")).issubset(commander_colors)
+        ]
         owned = self._apply_exclusions(owned)
         self.eventual_owned = sorted(owned, key=lambda d: d['types'])
         cts.EVENTUAL_SCRYFALL_ID_LIST = []
@@ -177,6 +200,9 @@ class Launcher(object):
     def build_deck(self):
         """Construit un deck Commander valide à partir d'une liste scorée."""
         commander_name = self.window.commander_input.currentText()
+        if not self.eventual_owned:
+            self.window.show_error("Charge d'abord des cartes éventuelles pour ce commandant.")
+            return
         strategy_manager = self.window.get_strategy_manager()
         deck_builder = DeckBuilder(self, commander_name, self._apply_exclusions(self.eventual_owned), strategy_manager)
         self.window.show_progress("Construction du deck", "Génération en cours...", maximum=100)

@@ -134,6 +134,7 @@ class StrategyManager:
     def __init__(self, scryfall_sync=None):
         self.current_strategy = DeckStrategy.MIDRANGE
         self.budget_mode = False
+        self.pauper_mode = False
         self.scryfall_sync = scryfall_sync  # Pour accès au bulk data
         
         # Cache des synergies détectées
@@ -148,6 +149,14 @@ class StrategyManager:
     def set_budget_mode(self, enabled: bool):
         """Active ou désactive le mode budget."""
         self.budget_mode = enabled
+        if not enabled:
+            self.pauper_mode = False
+
+    def set_pauper_mode(self, enabled: bool):
+        """Active ou désactive le mode pauper."""
+        self.pauper_mode = enabled
+        if enabled:
+            self.budget_mode = True
     
     def get_strategy_params(self) -> Dict[str, int]:
         """Retourne les paramètres pour la stratégie active."""
@@ -260,11 +269,12 @@ class StrategyManager:
         Returns:
             True si la carte est commune ou peu commune
         """
-        if not self.budget_mode:
+        if not self.budget_mode and not self.pauper_mode:
             return True
         
-        rarity = card_data.get("rarity", "").lower()
-        # En mode budget, on accepte uniquement common et uncommon
+        rarity = str(card_data.get("rarity", "") or "").lower()
+        if self.pauper_mode:
+            return rarity in ["common", "", None]
         return rarity in ["common", "uncommon", "", None]
     
     def get_strategy_description(self, strategy: Optional[DeckStrategy] = None) -> str:
