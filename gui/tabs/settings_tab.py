@@ -6,7 +6,7 @@ from PySide6.QtWidgets import (
     QGroupBox, QScrollArea, QSizePolicy, QFrame,
 )
 from PySide6.QtCore import Qt, Signal
-from mtg.constants import VERSION
+from mtg.constants import VERSION, CONTACT, YOUTUBE_URL
 
 
 class SettingsTab(QWidget):
@@ -160,14 +160,20 @@ class SettingsTab(QWidget):
         ab_layout = QVBoxLayout(grp_about)
         ab_layout.setSpacing(6)
 
-        self.about_title_label = QLabel("Créé par : Anthony Parisot")
+        self.about_title_label = QLabel("Créé par : ManaLab")
         self.about_title_label.setStyleSheet("font-weight: 600; color: #c9d1d9;")
         self.about_subtitle_label = QLabel(f"Version : {VERSION}")
         self.about_subtitle_label.setStyleSheet("color: #8b949e;")
-        self.about_contact_label = QLabel("Contact : parisot.a73@outlook.com")
+        self.about_contact_label = QLabel(f"Contact : {CONTACT}")
         self.about_contact_label.setStyleSheet("color: #8b949e;")
+        self.about_youtube_label = QLabel(
+            f'<a href="{YOUTUBE_URL}" style="color: #58a6ff; text-decoration: none;">Chaîne YouTube : ManaLab-FR</a>'
+        )
+        self.about_youtube_label.setOpenExternalLinks(True)
+        self.about_youtube_label.setTextInteractionFlags(Qt.TextBrowserInteraction)
+        self.about_youtube_label.setStyleSheet("color: #58a6ff;")
 
-        for lbl in (self.about_title_label, self.about_subtitle_label, self.about_contact_label):
+        for lbl in (self.about_title_label, self.about_subtitle_label, self.about_contact_label, self.about_youtube_label):
             ab_layout.addWidget(lbl)
 
         layout.addWidget(grp_about)
@@ -225,9 +231,13 @@ class SettingsTab(QWidget):
         self.numb_boardwipe_label.setText(t.get("numb_boardwipe_label", "Boardwipe:"))
         self.numb_wincondition_label.setText(t.get("numb_wincondition_label", "Win conditions:"))
 
-        self.about_title_label.setText(t.get("about_title", "Créé par : Anthony Parisot"))
+        self.about_title_label.setText(t.get("about_title", "Créé par : ManaLab"))
         self.about_subtitle_label.setText(t.get("about_subtitle", f"Version : {VERSION}"))
-        self.about_contact_label.setText(t.get("about_contact", "Contact : parisot.a73@outlook.com"))
+        self.about_contact_label.setText(t.get("about_contact", f"Contact : {CONTACT}"))
+        youtube_prefix = t.get("about_youtube", "Chaîne YouTube :")
+        self.about_youtube_label.setText(
+            f'<a href="{YOUTUBE_URL}" style="color: #58a6ff; text-decoration: none;">{youtube_prefix} ManaLab-FR</a>'
+        )
 
         # Export format items
         self.export_format.blockSignals(True)

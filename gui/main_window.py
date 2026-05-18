@@ -14,7 +14,7 @@ from PySide6.QtGui import QPixmap, QPainter, QIcon, QKeySequence as QKS
 
 import requests
 
-from mtg.constants import VERSION
+from mtg.constants import VERSION, CONTACT
 from mtg.deck_strategies import DeckStrategy, StrategyManager, STRATEGY_PROFILES
 from mtg.scryfall_sync import ScryfallSyncManager
 from mtg.edhrec_analytics import EDHRecAnalytics
@@ -73,9 +73,10 @@ class MainWindow(QMainWindow):
             "numb_removal_label": "Removal:",
             "numb_boardwipe_label": "Boardwipe:",
             "numb_wincondition_label": "Win conditions:",
-            "about_title": "Créé par : Anthony Parisot",
+            "about_title": "Créé par : ManaLab",
             "about_subtitle": f"Version : {VERSION}",
-            "about_contact": "Contact : parisot.a73@outlook.com",
+            "about_contact": f"Contact : {CONTACT}",
+            "about_youtube": "Chaîne YouTube :",
         },
         "en": {
             "window_title": "MTG Commander Deck Builder",
@@ -116,9 +117,10 @@ class MainWindow(QMainWindow):
             "numb_removal_label": "Removal:",
             "numb_boardwipe_label": "Boardwipe:",
             "numb_wincondition_label": "Win conditions:",
-            "about_title": "Created by: Anthony Parisot",
+            "about_title": "Created by: ManaLab",
             "about_subtitle": f"Version : {VERSION}",
-            "about_contact": "Contact: parisot.a73@outlook.com",
+            "about_contact": f"Contact: {CONTACT}",
+            "about_youtube": "YouTube channel:",
         },
     }
 
