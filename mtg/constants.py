@@ -4,6 +4,7 @@ YOUTUBE_URL = "https://www.youtube.com/@ManaLab-FR"
 
 CSV_PATH = None
 DB_PATH = "data/collection.db"
+MTGArena_DB_PATH = "data/mtg_arena_collection.db"
 SCRYFALL_BULK = "data/oracle-cards.json"
 
 EVENTUAL_SCRYFALL_ID_LIST = []

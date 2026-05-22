@@ -131,6 +131,67 @@ class ExternalDataProvider:
         self._load_set_catalog()
         return self._set_code_cache.get(raw_name, "")
 
+    def resolve_set_name(self, set_code: str = "") -> str:
+        """Récupère le nom complet du set à partir de son code via le catalogue local.
+
+        Args:
+            set_code: Code du set (ex: "ANB", "M21")
+
+        Returns:
+            Nom complet du set ou le code si non trouvé
+        """
+        set_code = str(set_code or "").strip().lower()
+        if not set_code:
+            return ""
+
+        # Utiliser le cache si disponible
+        cache_key = f"set_name::{set_code}"
+        if cache_key in self._scryfall_cache:
+            return self._scryfall_cache[cache_key]
+
+        # Charger le catalogue des sets et chercher le nom par code
+        self._load_set_catalog()
+
+        # Chercher dans le cache inversé (code -> nom)
+        if not hasattr(self, '_set_name_cache'):
+            self._build_set_name_cache()
+
+        return self._set_name_cache.get(set_code, set_code)
+
+    def _build_set_name_cache(self):
+        """Construit un cache inverse de code de set vers nom de set."""
+        self._set_name_cache = {}
+        try:
+            time.sleep(0.075)
+            url = "https://api.scryfall.com/sets"
+            response = requests.get(url, timeout=10)
+            response.raise_for_status()
+            data = response.json()
+
+            for set_data in data.get("data", []):
+                code = set_data.get("code", "").lower()
+                name = set_data.get("name", "")
+                if code and name:
+                    self._set_name_cache[code] = name
+                    self._scryfall_cache[f"set_name::{code}"] = name
+
+            # Gérer la pagination si nécessaire
+            next_url = data.get("next_page")
+            while next_url:
+                time.sleep(0.075)
+                response = requests.get(next_url, timeout=10)
+                response.raise_for_status()
+                data = response.json()
+                for set_data in data.get("data", []):
+                    code = set_data.get("code", "").lower()
+                    name = set_data.get("name", "")
+                    if code and name:
+                        self._set_name_cache[code] = name
+                        self._scryfall_cache[f"set_name::{code}"] = name
+                next_url = data.get("next_page")
+        except requests.exceptions.RequestException:
+            pass
+
     def get_card_for_exact_print(self, set_code: str = "", collector_number: str = "", set_name: str = "") -> Optional[Dict]:
         resolved_set_code = self.resolve_set_code(set_code=set_code, set_name=set_name)
         collector_number = (collector_number or "").strip()
@@ -279,7 +340,7 @@ class ExternalDataProvider:
 
     def get_card_cmc(self, scryfall_id: str) -> Optional[float]:
         """Retourne le coût converti de mana (cmc) d'une carte depuis Scryfall (cache)."""
-        if not scryfall_id or scryfall_id.startswith("cardnexus::"):
+        if not scryfall_id or scryfall_id.startswith("cardnexus::") or scryfall_id.startswith("mtga::"):
             return None
         data = self.get_scryfall_data(scryfall_id)
         if not data:

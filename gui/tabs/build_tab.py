@@ -15,118 +15,11 @@ from PySide6.QtWidgets import (
     QApplication, QTabWidget, QDialog, QStyledItemDelegate, QListView,
 )
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QPixmap, QPainter, QStandardItemModel, QStandardItem, QColor, QBrush
+from PySide6.QtGui import QPixmap, QPainter, QColor, QBrush
 
 from gui.widgets.card_image import open_card_image_dialog
 from gui.widgets.stats_panel import StatsPanel, SectionTitle
-
-
-class CheckableComboBox(QComboBox):
-    """ComboBox avec sélection multiple via checkboxes."""
-    
-    selection_changed = Signal(list)  # Émet la liste des items sélectionnés
-    
-    def __init__(self, placeholder: str = "Tous", parent=None):
-        super().__init__(parent)
-        self._placeholder = placeholder
-        self._model = QStandardItemModel(self)
-        self.setModel(self._model)
-        self.setEditable(True)
-        self.lineEdit().setReadOnly(True)
-        self.lineEdit().setPlaceholderText(placeholder)
-        self.lineEdit().setCursor(Qt.PointingHandCursor)
-        
-        # Style pour voir les checkboxes sur fond sombre
-        self.view().setStyleSheet("""
-            QListView {
-                background: #21262d;
-                color: #c9d1d9;
-                border: 1px solid #30363d;
-            }
-            QListView::item {
-                padding: 4px 8px 4px 6px;
-                min-height: 24px;
-            }
-            QListView::item:hover {
-                background: #30363d;
-            }
-            QAbstractItemView::indicator {
-                width: 16px;
-                height: 16px;
-                margin-right: 6px;
-            }
-            QAbstractItemView::indicator:unchecked {
-                border: 2px solid #484f58;
-                background: #0d1117;
-                border-radius: 3px;
-            }
-            QAbstractItemView::indicator:checked {
-                border: 2px solid #238636;
-                background: #238636;
-                border-radius: 3px;
-            }
-            QAbstractItemView::item:selected {
-                background: #1f3a6e;
-                color: #e6edf3;
-            }
-        """)
-        
-        # Empêcher la fermeture du popup au clic
-        self.view().pressed.connect(self._on_item_pressed)
-        self.setMinimumWidth(100)
-        
-    def _on_item_pressed(self, index):
-        item = self._model.itemFromIndex(index)
-        if item and item.isCheckable():
-            item.setCheckState(Qt.Unchecked if item.checkState() == Qt.Checked else Qt.Checked)
-            self._update_text()
-            self.selection_changed.emit(self.get_checked_items())
-    
-    def _update_text(self):
-        checked = self.get_checked_items()
-        if not checked or len(checked) == self._model.rowCount():
-            self.lineEdit().setText("")
-            self.lineEdit().setPlaceholderText(self._placeholder)
-        else:
-            self.lineEdit().setText(", ".join(checked[:2]) + ("…" if len(checked) > 2 else ""))
-    
-    def add_items(self, items: List[str]):
-        """Ajoute des items avec checkboxes."""
-        self._model.clear()
-        for text in items:
-            item = QStandardItem(text)
-            item.setCheckable(True)
-            item.setCheckState(Qt.Unchecked)
-            item.setFlags(item.flags() | Qt.ItemIsUserCheckable | Qt.ItemIsEnabled)
-            self._model.appendRow(item)
-        self._update_text()
-    
-    def get_checked_items(self) -> List[str]:
-        """Retourne la liste des items cochés."""
-        checked = []
-        for i in range(self._model.rowCount()):
-            item = self._model.item(i)
-            if item and item.checkState() == Qt.Checked:
-                checked.append(item.text())
-        return checked
-    
-    def clear_selection(self):
-        """Décoche tous les items."""
-        for i in range(self._model.rowCount()):
-            item = self._model.item(i)
-            if item:
-                item.setCheckState(Qt.Unchecked)
-        self._update_text()
-
-    def set_checked_items(self, items: List[str]):
-        targets = {str(item).strip().lower() for item in items}
-        for i in range(self._model.rowCount()):
-            item = self._model.item(i)
-            if not item:
-                continue
-            item.setCheckState(Qt.Checked if item.text().strip().lower() in targets else Qt.Unchecked)
-        self._update_text()
-        self.selection_changed.emit(self.get_checked_items())
+from gui.widgets.checkable_combo_box import CheckableComboBox
 
 
 class BuildTab(QWidget):
@@ -338,9 +231,9 @@ class BuildTab(QWidget):
         ev_layout.addLayout(ev_header)
 
         self.deck_found_table = self._make_table(
-            ["Nom", "Couleurs", "Types", "Rank", "Occurrences", "Catégorie"],
+            ["Nom", "Couleurs", "Types", "Rank", "Occurrences", "Catégorie", "Score"],
             stretch_cols=[0, 2, 5],
-            content_cols=[1, 3, 4],
+            content_cols=[1, 3, 4, 6],
         )
         self.deck_found_table.setContextMenuPolicy(Qt.CustomContextMenu)
         self.deck_found_table.customContextMenuRequested.connect(
@@ -406,9 +299,9 @@ class BuildTab(QWidget):
         dk_layout.addLayout(dk_header)
 
         self.deck_table = self._make_table(
-            ["Nom", "Types", "Set", "Rareté", "Rôle", "Score"],
-            stretch_cols=[0, 1],
-            content_cols=[2, 3, 4, 5],
+            ["Nom", "Types", "Set", "Rareté", "Rôle", "Sélection", "Score"],
+            stretch_cols=[0, 1, 5],
+            content_cols=[2, 3, 4, 6],
         )
         self.deck_table.setContextMenuPolicy(Qt.CustomContextMenu)
         self.deck_table.customContextMenuRequested.connect(
@@ -674,6 +567,12 @@ class BuildTab(QWidget):
             col5.setForeground(QBrush(QColor(_category_color(str(card.get("defaultCategory", ""))))))
             self.deck_found_table.setItem(row, 5, col5)
 
+            score = float(card.get("score", 0) or 0)
+            col6 = QTableWidgetItem(f"{score:.4f}")
+            col6.setTextAlignment(Qt.AlignCenter)
+            col6.setForeground(QBrush(QColor("#8b949e")))
+            self.deck_found_table.setItem(row, 6, col6)
+
         self.deck_found_table.setSortingEnabled(True)
 
     def set_deck_cards(self, cards: List[Dict]):
@@ -710,39 +609,55 @@ class BuildTab(QWidget):
             rarity = (card.get("rarity", "") or "").capitalize()
             score = float(card.get("score", 0) or 0)
             role_label = _normalize_role_label(str(card.get("role", "") or "—"))
+            selection_reason = _selection_stage_label(card.get("selection_stage", ""))
+            selection_badge = _selection_stage_badge_label(card.get("selection_stage", ""))
 
             col0 = QTableWidgetItem(card.get("name", ""))
             col0.setData(Qt.UserRole, int(card.get("_source_index", row)))
+            col0.setToolTip(selection_reason)
             self.deck_table.setItem(row, 0, col0)
 
             col1 = QTableWidgetItem(card.get("types", "") or "—")
             col1.setForeground(QBrush(QColor("#8b949e")))
+            col1.setToolTip(selection_reason)
             self.deck_table.setItem(row, 1, col1)
 
             col2 = QTableWidgetItem(card.get("set_name", "") or card.get("set_code", "") or "—")
             col2.setForeground(QBrush(QColor("#8b949e")))
+            col2.setToolTip(selection_reason)
             self.deck_table.setItem(row, 2, col2)
 
             col3 = QTableWidgetItem(rarity or "—")
             col3.setTextAlignment(Qt.AlignCenter)
             col3.setForeground(QBrush(QColor(_rarity_color(rarity))))
+            col3.setToolTip(selection_reason)
             self.deck_table.setItem(row, 3, col3)
 
             col4 = QTableWidgetItem(role_label)
             col4.setTextAlignment(Qt.AlignCenter)
             col4.setForeground(QBrush(QColor(_role_color(role_label))))
+            col4.setToolTip(selection_reason)
             self.deck_table.setItem(row, 4, col4)
 
-            col5 = QTableWidgetItem(f"{score:.2f}")
+            col5 = QTableWidgetItem(selection_badge)
             col5.setTextAlignment(Qt.AlignCenter)
-            col5.setData(Qt.UserRole, score)
-            if score >= 3.0:
-                col5.setForeground(QBrush(QColor("#3fb950")))
-            elif score >= 1.5:
-                col5.setForeground(QBrush(QColor("#79c0ff")))
-            else:
-                col5.setForeground(QBrush(QColor("#8b949e")))
+            col5.setForeground(QBrush(QColor(_selection_stage_color(card.get("selection_stage", "")))))
+            col5.setToolTip(selection_reason)
             self.deck_table.setItem(row, 5, col5)
+
+            col6 = QTableWidgetItem(f"{score:.2f}")
+            col6.setTextAlignment(Qt.AlignCenter)
+            col6.setData(Qt.UserRole, score)
+            if score >= 0.90:
+                col6.setForeground(QBrush(QColor("#3fb950")))
+            elif score >= 0.50:
+                col6.setForeground(QBrush(QColor("#79c0ff")))
+            elif score >= 0.20:
+                col6.setForeground(QBrush(QColor("#8b949e")))
+            else:
+                col6.setForeground(QBrush(QColor("#D10000")))
+            col6.setToolTip(selection_reason)
+            self.deck_table.setItem(row, 6, col6)
 
         self.deck_table.setSortingEnabled(True)
 
@@ -1132,7 +1047,8 @@ class BuildTab(QWidget):
 
             label = QLabel()
             label.setPixmap(pix.scaledToWidth(200, Qt.SmoothTransformation))
-            label.setToolTip(card.get("name", ""))
+            selection_reason = _selection_stage_label(card.get("selection_stage", ""))
+            label.setToolTip(f"{card.get('name', '')}\n{selection_reason}")
             label.setCursor(Qt.PointingHandCursor)
             label.mouseDoubleClickEvent = lambda e, c=card: open_card_image_dialog(self, c, external_provider)
             r, c_col = divmod(idx, col_count)
@@ -1220,7 +1136,6 @@ _ROLE_HEX = {
     "ramp": "#4caf50",
     "draw": "#5ba4cf",
     "removal": "#e06030",
-    "boardwipe": "#da3633",
     "finisher": "#bc8cff",
     "land": "#8b6914",
     "utility": "#8b949e",
@@ -1229,7 +1144,6 @@ _CATEGORY_HEX = {
     "Ramp": "#4caf50",
     "Card Draw": "#5ba4cf",
     "Removal": "#e06030",
-    "Board Wipe": "#da3633",
     "Finisher": "#bc8cff",
     "Land": "#8b6914",
     "Utility": "#8b949e",
@@ -1275,8 +1189,16 @@ def _normalize_role_label(role: str) -> str:
         "carddraw": "Draw",
         "removal": "Removal",
         "interaction": "Removal",
-        "boardwipe": "Boardwipe",
-        "wipe": "Boardwipe",
+        "boardwipe": "Removal",
+        "boardwipes": "Removal",
+        "board": "Removal",
+        "wipe": "Removal",
+        "massremoval": "Removal",
+        "massremovalspell": "Removal",
+        "sweeper": "Removal",
+        "sweepers": "Removal",
+        "boardclear": "Removal",
+        "boardclears": "Removal",
         "finisher": "Finisher",
         "wincon": "Finisher",
         "wincondition": "Finisher",
@@ -1301,3 +1223,58 @@ def _extract_color_codes(raw_colors) -> list[str]:
         if token_upper in {"W", "U", "B", "R", "G", "C"} and token_upper not in normalized:
             normalized.append(token_upper)
     return normalized
+
+
+def _selection_stage_label(selection_stage: str) -> str:
+    value = str(selection_stage or "").strip()
+    if not value:
+        return "Ajoutée au deck"
+    if value == "commander_seed":
+        return "Ajoutée comme commandant du deck"
+    if value == "commander_fallback":
+        return "Ajoutée comme commandant via récupération externe"
+    if value.startswith("role:"):
+        role = _normalize_role_label(value.split(":", 1)[1])
+        return f"Sélectionnée pour atteindre le quota de rôle : {role}"
+    labels = {
+        "fill:nonland": "Ajoutée pour compléter les cartes non-terrain",
+        "fill:collection_limit": "Ajoutée pour compléter le deck malgré une collection limitée",
+        "land:distinct": "Ajoutée comme terrain distinct",
+        "land:basic_fill": "Ajoutée comme terrain de base pour atteindre le quota de terrains",
+    }
+    return labels.get(value, f"Étape de sélection : {value}")
+
+
+def _selection_stage_badge_label(selection_stage: str) -> str:
+    value = str(selection_stage or "").strip()
+    if not value:
+        return "Ajout"
+    if value == "commander_seed":
+        return "Commandant"
+    if value == "commander_fallback":
+        return "Cmd ext."
+    if value.startswith("role:"):
+        role = _normalize_role_label(value.split(":", 1)[1])
+        return f"Quota {role}"
+    labels = {
+        "fill:nonland": "Complément",
+        "fill:collection_limit": "Collection",
+        "land:distinct": "Terrain",
+        "land:basic_fill": "Base land",
+    }
+    return labels.get(value, "Ajout")
+
+
+def _selection_stage_color(selection_stage: str) -> str:
+    value = str(selection_stage or "").strip()
+    if value in {"commander_seed", "commander_fallback"}:
+        return "#d29922"
+    if value.startswith("role:"):
+        return "#58a6ff"
+    if value == "fill:nonland":
+        return "#8b949e"
+    if value == "fill:collection_limit":
+        return "#f0883e"
+    if value in {"land:distinct", "land:basic_fill"}:
+        return "#3fb950"
+    return "#8b949e"

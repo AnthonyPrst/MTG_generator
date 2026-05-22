@@ -17,31 +17,48 @@ logger = logging.getLogger(__name__)
 
 class CollectionManager:
     """Gère la collection de cartes Magic: The Gathering dans une base SQLite.
-    
+
     Attributes:
         csv_path: Chemin vers le fichier CSV source
         db_path: Chemin vers la base de données SQLite
+        collection_type: Type de collection ('physical' ou 'mtg_arena')
     """
-    
-    def __init__(self):
+
+    def __init__(self, collection_type: str = 'physical'):
         """Initialise le gestionnaire de collection.
+
+        Args:
+            collection_type: Type de collection ('physical' ou 'mtg_arena')
         """
+        self.collection_type = collection_type
         self.csv_path = None
+        self._last_skipped_count = 0
         if cts.CSV_PATH:
             self.csv_path = Path(cts.CSV_PATH)
-        if cts.DB_PATH:
-            self.db_path = Path(cts.DB_PATH)
+
+        # Choisir la base de données selon le type de collection
+        if collection_type == 'mtg_arena':
+            if cts.MTGArena_DB_PATH:
+                self.db_path = Path(cts.MTGArena_DB_PATH)
+            else:
+                self.db_path = Path("data/mtg_arena_collection.db")
+        else:
+            if cts.DB_PATH:
+                self.db_path = Path(cts.DB_PATH)
+            else:
+                self.db_path = Path("data/collection.db")
+
         self.conn: Optional[sqlite3.Connection] = None
         self._scryfall_sync: Optional[ScryfallSyncManager] = None
-        
+
         # Créer le répertoire de la base de données si nécessaire
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        
+
         # Initialiser la base de données
         self._init_db()
-        
-        # Si la base est vide, importer le CSV
-        if self._is_db_empty() and self.csv_path:
+
+        # Si la base est vide et que c'est la collection physique, importer le CSV
+        if self.collection_type == 'physical' and self._is_db_empty() and self.csv_path:
             raise FileNotFoundError(f"La base de données est vide")
 
     def _init_db(self) -> None:
@@ -92,36 +109,40 @@ class CollectionManager:
             cursor.execute("SELECT COUNT(*) as count FROM cards")
             return cursor.fetchone()["count"] == 0
 
-    def _load_csv_into_db(self, import_type: str, progress_cb=None, label_cb=None, bulk_provider=None) -> None:
+    def _load_csv_into_db(self, import_type: str, progress_cb=None, label_cb=None, bulk_provider=None) -> int:
         """Charge les données du CSV dans la base de données SQLite.
-        
+
         Args:
             import_type: Type d'import ('ManaBox - Collection', 'Moxfield', 'CardNexus', etc.)
             progress_cb: Fonction de callback pour mettre à jour la barre de progression
             label_cb: Fonction de callback pour mettre à jour le label de progression
             bulk_provider: ScryfallSyncManager optionnel pour lookup local (évite les appels API)
+
+        Returns:
+            Nombre de cartes ignorées (skipped)
         """
         # Récupérer le format d'import
         import_format = get_import_format(import_type)
         if not import_format:
             raise ValueError(f"Format d'import non supporté : {import_type}")
-        
+
         with (
             open(self.csv_path, 'r', encoding='utf-8') as csvfile,
             self._get_connection() as conn
         ):
             reader = csv.DictReader(csvfile)
-            
+
             # Valider les colonnes requises
             import_format.validate_columns(reader.fieldnames)
-            
+
             cursor = conn.cursor()
             cursor.execute("SELECT LOWER(name) as name, scryfall_id FROM cards")
             existing_cards: Set[tuple[str, str]] = {
                 (row["name"], (row["scryfall_id"] or "").strip()) for row in cursor.fetchall()
             }
             inserted_count = 0
-            
+            skipped_count = 0
+
             # Compter le nombre de lignes pour le suivi de progression
             total_rows = 0
             try:
@@ -152,25 +173,25 @@ class CollectionManager:
                 self.external_data_priovider.seed_set_code_cache(local_set_map)
             except Exception:
                 pass
-            
+
             # Traiter chaque ligne avec le format approprié
             for row in reader:
                 current_row += 1
                 if label_cb:
                     label_cb(f"Import {import_format.name} ({current_row}/{total_rows or '?'})")
-                
+
                 try:
                     # Traiter la ligne avec le format d'import
                     card_data = import_format.process_row(row, self.external_data_priovider, bulk_provider=bulk_provider)
-                    
+
                     # Vérifier si la carte existe déjà
                     key = (card_data['name'].lower(), card_data['scryfall_id'])
                     if key in existing_cards and card_data['scryfall_id']:
                         continue
-                    
+
                     # Insérer la carte dans la base de données
                     cursor.execute("""
-                        INSERT OR IGNORE INTO cards 
+                        INSERT OR IGNORE INTO cards
                         (name, colors, types, scryfall_id, oracle_id, set_code, set_name, collector_number, image_url,
                             foil, rarity, quantity, card_condition, language)
                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -190,20 +211,27 @@ class CollectionManager:
                         card_data['card_condition'],
                         card_data['language']
                     ))
-                    
+
                     inserted_count += cursor.rowcount
                     if card_data['scryfall_id']:
                         existing_cards.add(key)
-                    
+
                     if progress_cb and total_rows:
                         progress_cb(current_row)
-                        
+
+                except ValueError as e:
+                    # Carte ignorée intentionnellement (ex: nom invalide)
+                    skipped_count += 1
+                    logger.warning(f"Carte ignorée ligne {current_row}: {e}")
+                    continue
                 except Exception as e:
                     logger.warning(f"Erreur lors du traitement de la ligne {current_row}: {e}")
                     continue
-            
+
             conn.commit()
-            logger.info(f"Collection chargée depuis {self.csv_path} : {inserted_count} nouvelles cartes")
+            logger.info(f"Collection chargée depuis {self.csv_path} : {inserted_count} nouvelles cartes, {skipped_count} ignorées")
+
+            return skipped_count
 
     def get_all_cards(self) -> List[Dict[str, Any]]:
         """Récupère toutes les cartes de la collection.
@@ -629,21 +657,21 @@ class CollectionManager:
     # Méthodes de compatibilité avec l'ancienne interface
     def load_from_csv(self, csv_path: str, import_type: str = None, progress_cb=None, label_cb=None, bulk_provider=None) -> bool:
         """Charge la collection depuis un fichier CSV.
-        
+
         Args:
             csv_path: Chemin vers le fichier CSV de collection.
             import_type: Type d'import (si None, détection automatique)
             progress_cb: Fonction de callback pour la progression
             label_cb: Fonction de callback pour le label
             bulk_provider: ScryfallSyncManager optionnel pour lookup local (évite les appels API)
-            
+
         Returns:
             bool: True si le chargement a réussi, False sinon.
         """
         try:
             cts.CSV_PATH = csv_path
             self.csv_path = Path(csv_path)
-            
+
             # Détection automatique du format si non spécifié
             if import_type is None:
                 detected_format = detect_format(csv_path)
@@ -652,8 +680,10 @@ class CollectionManager:
                     logger.info(f"Format détecté automatiquement : {import_type}")
                 else:
                     raise ValueError("Impossible de détecter automatiquement le format du fichier. Veuillez spécifier le format d'import.")
-            
-            self._load_csv_into_db(import_type, progress_cb, label_cb, bulk_provider=bulk_provider)
+
+            skipped = self._load_csv_into_db(import_type, progress_cb, label_cb, bulk_provider=bulk_provider)
+            # Stocker le nombre de cartes ignorées pour affichage ultérieur
+            self._last_skipped_count = skipped
             return True
         except Exception as e:
             logger.error(f"Erreur lors du chargement du CSV : {str(e)}")

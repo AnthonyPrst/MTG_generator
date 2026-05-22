@@ -2,13 +2,17 @@
 
 import sys
 import argparse
-import time
 import ast
+import logging
 from pathlib import Path
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QInputDialog
 from PySide6.QtGui import QIcon
+from PySide6.QtCore import Qt
 
 from mtg.collection import CollectionManager
+from mtg.deck_analysis import DeckAnalysisService
+from mtg.collection_import import CollectionImportService
+from mtg.deck_search import DeckSearchService
 from mtg.external_data import ExternalDataProvider
 from mtg.deckbuilder import DeckBuilder
 from mtg.validators import DeckValidator
@@ -18,28 +22,31 @@ from mtg import constants as cts
 from gui.main_window import MainWindow
 
 
+logger = logging.getLogger(__name__)
 
+ 
 class Launcher(object):
     def __init__(self) -> None:
         setup_logging("INFO")
         app = QApplication(sys.argv)
-        # Style moderne
         app.setStyle('Fusion')
-        # Création et affichage de la fenêtre principale
         self.setup()
         self.window = MainWindow(self)
         self.update_collection_list()
         self.window.show()
 
-
-        # Exécution de l'application
         sys.exit(app.exec())
 
     def setup(self):
         """Fonction principale."""
         # Initialisation des composants
-        self.collection_manager = CollectionManager()
+        self.collection_manager = CollectionManager(collection_type='physical')
         self.external_provider = ExternalDataProvider()
+        self.collection_import_service = CollectionImportService(self.collection_manager)
+        self.deck_search_service = DeckSearchService(
+            collection_manager=self.collection_manager,
+            external_provider=self.external_provider,
+        )
         self.excluded_card_names: set[str] = set()
         self.eventual_owned: list[dict] = []
         self.current_language = "fr"
@@ -64,31 +71,26 @@ class Launcher(object):
         """Importe une collection depuis un fichier CSV."""
         file_path, import_type = self.window.get_csv_path_for_import_in_db()
         if file_path:
-            # progression: afficher un QProgressDialog indéterminé puis borné si possible
             self.window.show_progress("Import de collection", "Lecture du fichier...")
             try:
-                # Utiliser le bulk Scryfall local si disponible (évite ~4000 appels API)
-                bulk_provider = None
-                if hasattr(self.window, 'scryfall_sync') and self.window.scryfall_sync.is_bulk_available():
-                    bulk_provider = self.window.scryfall_sync
-                    self.window.set_progress_label("Chargement du bulk Scryfall...")
-                    bulk_provider.load_oracle_cards()  # Pré-charger le cache
-                
-                success = self.collection_manager.load_from_csv(
-                    file_path,
-                    import_type,
+                result = self.collection_import_service.import_collection(
+                    csv_path=file_path,
+                    import_type=import_type,
                     progress_cb=self.window.update_progress,
                     label_cb=self.window.set_progress_label,
-                    bulk_provider=bulk_provider,
+                    scryfall_sync=getattr(self.window, 'scryfall_sync', None),
                 )
-                if not success:
-                    self.window.show_error(
-                        "L'import de collection a échoué. Vérifie le format sélectionné, ou utilise 'Détection automatique'."
-                    )
+                if not result.success:
+                    self.window.show_error(result.error_message)
                     return
                 self.window.set_progress_label("Rafraîchissement de l'interface...")
                 self.update_collection_list()
                 self.window.refresh_commander_candidates()
+
+                # Afficher le nombre de cartes ignorées
+                skipped = getattr(self.collection_manager, '_last_skipped_count', 0)
+                if skipped > 0:
+                    self.window.statusBar().showMessage(f"Import terminé : {skipped} cartes ignorées (noms invalides)", 5000)
             finally:
                 self.window.close_progress()
 
@@ -139,11 +141,43 @@ class Launcher(object):
     
     def export_deck_list(self):
         """Exporte la liste des cartes du deck dans un fichier txt"""
+        if not cts.DECK_BUILD_SCRYFALL_ID_LIST:
+            self.window.show_error("Aucune carte à exporter. Construisez d'abord un deck.")
+            return
+
+        commander_name = self.window.commander_input.currentText()
+        if not commander_name:
+            self.window.show_error("Aucun commandant sélectionné.")
+            return
+
+        # Choix du format d'export
+        format_options = ["Standard", "MTG Arena"]
+        export_format, accepted = QInputDialog.getItem(
+            self.window,
+            "Format d'export",
+            "Choisir le format d'export:",
+            format_options,
+            0,
+            False
+        )
+        if not accepted:
+            return
+
+        format_key = "mtga_arena" if export_format == "MTG Arena" else "standard"
         file_path = self.window.get_save_file_name(
-            "Exporter la liste de carte du deck", "deck_list.txt", "TXT files (*.txt)"
+            f"Exporter le deck {export_format}",
+            f"deck_{export_format.lower().replace(' ', '_')}.txt",
+            "TXT files (*.txt)"
         )
         if file_path:
-            self.collection_manager.export_db_list_cards_to_txt(cts.DECK_BUILD_SCRYFALL_ID_LIST, file_path)
+            try:
+                with self.collection_manager._get_connection() as conn:
+                    exporter = DeckExporter()
+                    exporter.export_deck_to_txt(cts.DECK_BUILD_SCRYFALL_ID_LIST, commander_name, conn, format_key, file_path)
+                self.window.statusBar().showMessage(f"Deck exporté au format {export_format} : {file_path}", 5000)
+            except Exception as e:
+                logger.error(f"Erreur lors de l'export : {str(e)}")
+                self.window.show_error(f"Erreur lors de l'export : {str(e)}")
 
     def get_decks_archidekt_from_commander(self):
         """Importe une collection depuis un fichier CSV."""
@@ -156,46 +190,30 @@ class Launcher(object):
 
         decks_id = self.external_provider.get_archidekt_decks_id_for_commander(commander_name, order_by)
         numbers_decks = len(decks_id)
-        match deck_search_params:
-            case 0:
-                len_decks = round(numbers_decks/3)
-            case 1:
-                len_decks = round(numbers_decks*2/3)
-            case 2:
-                len_decks = numbers_decks
-        cards = {}
+        len_decks = self.deck_search_service._resolve_deck_count(numbers_decks, deck_search_params)
         self.window.show_progress("Recherche de decks", "Chargement des decks Archidekt...", maximum=len_decks or 0)
         try:
-            for idx, deck_id in enumerate(decks_id[:len_decks], start=1):
-                time.sleep(0.1)
-                deck = self.external_provider.load_archidekt_deck(deck_id)
-
-                for name, info in deck.items():
-                    if name in cards:
-                        # on cumule les occurences (nb de decks où la carte apparaît)
-                        cards[name]["occurence"] += info.get("occurence", 1)
-                    else:
-                        # première fois qu'on voit cette carte
-                        cards[name] = info
-                self.window.update_progress(idx)
+            search_result = self.deck_search_service.search_commander_candidates(
+                commander_name=commander_name,
+                order_by=order_by,
+                deck_search_index=deck_search_params,
+                deck_ids=decks_id,
+                excluded_card_names=self.excluded_card_names,
+                progress_cb=self.window.update_progress,
+            )
         finally:
             self.window.close_progress()
 
-        owned = self.collection_manager.compare_deck_to_collection(cards)
-        commander_colors = self.collection_manager.get_card_colors(commander_name)
-        owned = [
-            card for card in owned
-            if self._normalize_color_tokens(card.get("colors", "")).issubset(commander_colors)
-        ]
-        owned = self._apply_exclusions(owned)
-        self.eventual_owned = sorted(owned, key=lambda d: d['types'])
+        self.eventual_owned = search_result.to_dicts()
+        if search_result.excluded_count:
+            self.window.statusBar().showMessage(f"{search_result.excluded_count} cartes exclues (pas de doublon)", 5000)
         cts.EVENTUAL_SCRYFALL_ID_LIST = []
         for card in self.eventual_owned:
             cts.EVENTUAL_SCRYFALL_ID_LIST.append(card["scryfall_id"])
         # Alimenter le tableau avec la nouvelle API
         if hasattr(self.window, "set_eventual_cards"):
             self.window.set_eventual_cards(self.eventual_owned)
-        self.window.set_length_of_eventual_list(len(owned), len_decks, numbers_decks)
+        self.window.set_length_of_eventual_list(len(self.eventual_owned), search_result.decks_scanned, search_result.decks_found)
 
     def build_deck(self):
         """Construit un deck Commander valide à partir d'une liste scorée."""
@@ -208,11 +226,13 @@ class Launcher(object):
         self.window.show_progress("Construction du deck", "Génération en cours...", maximum=100)
         try:
             deck = deck_builder.build_deck()
-        except Exception as e:
+        except Exception:
+            logger.exception("Échec de construction du deck pour le commandant '%s'", commander_name)
+            self.window.show_error("La construction du deck a échoué. Consulte les logs pour plus de détails.")
             self.window.close_progress()
             return
         self.window.update_progress(25)
-        cards = sorted(deck.cards, key=lambda d: d['types'])
+        cards = sorted((card.to_dict() for card in deck.cards), key=lambda d: d['types'])
         commander_first = [c for c in cards if c["name"] == commander_name]
         non_commander = [c for c in cards if c["name"] != commander_name]
         cards = commander_first + non_commander
@@ -235,6 +255,16 @@ class Launcher(object):
         mana_curve_text, stats_text = self._compute_deck_stats(summary)
         self.window.set_deck_stats(mana_curve_text, stats_text)
         self.window.update_progress(75)
+
+        # Mettre à jour les scores dans les cartes éventuelles après la création du deck
+        scored_cards = deck_builder.scored_cards
+        score_by_name = {card["name"]: card["score"] for card in scored_cards}
+        for card in self.eventual_owned:
+            card_name = card.get("name")
+            if card_name in score_by_name:
+                card["score"] = score_by_name[card_name]
+        if hasattr(self.window, "set_eventual_cards"):
+            self.window.set_eventual_cards(self.eventual_owned)
         self.window.set_deck_graphs(summary)
         self.window.update_progress(100)
         self.window.close_progress()
@@ -299,137 +329,60 @@ class Launcher(object):
 
     def _summarize_deck(self, cards: list[dict]) -> dict:
         """Retourne un résumé commun pour courbe de mana et stats rôles."""
-        buckets = {k: 0 for k in ["0", "1", "2", "3", "4", "5", "6", "7+"]}
-        total_cmc = 0.0
-        cmc_count = 0
-        lands = 0
-        roles: dict[str, int] = {}
-        colors = {k: 0 for k in ["W", "U", "B", "R", "G", "C"]}
-        rarities: dict[str, int] = {}
-
-        for card in cards:
-            types = card.get("types", "")
-            role = _normalize_role_label(card.get("role") or "Other")
-            roles[role] = roles.get(role, 0) + 1
-
-            rarity = _normalize_rarity_label(card.get("rarity") or "")
-            rarities[rarity] = rarities.get(rarity, 0) + 1
-
-            card_colors = self.collection_manager.get_card_colors(card.get("name", ""))
-            if card_colors:
-                for color in card_colors:
-                    if color in colors:
-                        colors[color] += 1
-            elif "Land" not in types:
-                colors["C"] += 1
-
-            if "Land" in types:
-                lands += 1
-                continue
-
-            scryfall_id = card.get("scryfall_id")
-            cmc = None
-            if scryfall_id and not scryfall_id.startswith("cardnexus::"):
-                cmc = self.external_provider.get_card_cmc(scryfall_id)
-            if cmc is None:
-                card_name = card.get("name", "")
-                bulk_provider = getattr(self.window, "scryfall_sync", None)
-                bulk_data = bulk_provider.get_card_for_import(card_name=card_name) if (card_name and bulk_provider) else None
-                if bulk_data:
-                    raw_cmc = bulk_data.get("cmc")
-                    try:
-                        cmc = float(raw_cmc) if raw_cmc is not None else None
-                    except (TypeError, ValueError):
-                        cmc = None
-            if cmc is None:
-                continue
-            cmc_count += 1
-            total_cmc += cmc
-            if cmc >= 7:
-                buckets["7+"] += 1
-            else:
-                bucket_key = str(int(cmc)) if cmc >= 0 else "0"
-                if bucket_key not in buckets:
-                    bucket_key = "7+"
-                buckets[bucket_key] += 1
-
-        return {
-            "buckets": buckets,
-            "total_cmc": total_cmc,
-            "cmc_count": cmc_count,
-            "lands": lands,
-            "roles": roles,
-            "colors": colors,
-            "rarities": rarities,
-            "total_cards": len(cards),
+        summary = self._get_deck_analysis_service().summarize_deck(cards)
+        summary["targets"] = {
+            "lands_min": self.window.numb_min_land.value(),
+            "lands_max": self.window.numb_max_land.value(),
+            "roles": {
+                "Ramp": self.window.numb_ramp.value(),
+                "Draw": self.window.numb_draw.value(),
+                "Removal": self.window.numb_removal.value(),
+                "Finisher": self.window.numb_wincondition.value(),
+            },
         }
+        return summary
 
     def _compute_deck_stats(self, summary: dict) -> tuple[str, str]:
         """Calcule la courbe de mana et quelques statistiques synthétiques."""
-        buckets = summary["buckets"]
-        total_cmc = summary["total_cmc"]
-        cmc_count = summary["cmc_count"]
-        lands = summary["lands"]
-        roles = summary["roles"]
-        total_cards = summary.get("total_cards", 0)
+        return self._get_deck_analysis_service().compute_deck_stats(summary)
 
-        # Texte courbe de mana
-        curve_parts = [f"{k}: {v}" for k, v in buckets.items()]
-        mana_curve_text = "Courbe de mana : " + " | ".join(curve_parts)
+    def _get_deck_analysis_service(self) -> DeckAnalysisService:
+        return DeckAnalysisService(
+            collection_manager=self.collection_manager,
+            external_provider=self.external_provider,
+            bulk_provider=getattr(self.window, "scryfall_sync", None),
+        )
 
-        avg_cmc = (total_cmc / cmc_count) if cmc_count else 0.0
-        colors = summary.get("colors", {})
-        color_text = ", ".join(
-            f"{key}: {colors.get(key, 0)}" for key in ["W", "U", "B", "R", "G", "C"] if colors.get(key, 0)
-        ) or "n/a"
-        stats_lines = [
-            f"Cartes totales : {total_cards}",
-            f"Lands : {lands}",
-            f"CMJ moyenne : {avg_cmc:.2f}" if cmc_count else "CMJ moyenne : n/a",
-            "Répartition par rôle : " + ", ".join(f"{r}: {n}" for r, n in sorted(roles.items())),
-            "Répartition couleurs : " + color_text,
-        ]
-        stats_text = "\n".join(stats_lines)
-        return mana_curve_text, stats_text
+    def switch_collection(self, collection_type: str):
+        """Change la collection active (physical ou mtg_arena).
 
+        Args:
+            collection_type: Type de collection ('physical' ou 'mtg_arena')
+        """
+        try:
+            # Fermer l'ancienne connexion si elle existe
+            if hasattr(self.collection_manager, 'conn') and self.collection_manager.conn:
+                self.collection_manager.conn.close()
 
-def _normalize_role_label(role: str) -> str:
-    value = str(role or "").strip()
-    if not value:
-        return "Other"
+            # Créer un nouveau gestionnaire de collection avec le bon type
+            self.collection_manager = CollectionManager(collection_type=collection_type)
+            self.collection_import_service = CollectionImportService(self.collection_manager)
+            self.deck_search_service = DeckSearchService(
+                collection_manager=self.collection_manager,
+                external_provider=self.external_provider,
+            )
 
-    normalized = value.lower().replace(" ", "").replace("-", "")
-    aliases = {
-        "ramp": "Ramp",
-        "draw": "Draw",
-        "carddraw": "Draw",
-        "removal": "Removal",
-        "interaction": "Removal",
-        "boardwipe": "Boardwipe",
-        "wipe": "Boardwipe",
-        "finisher": "Finisher",
-        "wincon": "Finisher",
-        "wincondition": "Finisher",
-        "land": "Land",
-        "other": "Other",
-    }
-    return aliases.get(normalized, value.title())
+            # Rafraîchir l'interface
+            self.update_collection_list()
+            self.window.refresh_commander_candidates()
 
+            # Message de confirmation
+            collection_name = "Collection physique" if collection_type == 'physical' else "MTG Arena"
+            self.window.statusBar().showMessage(f"Collection changée : {collection_name}", 4000)
 
-def _normalize_rarity_label(rarity: str) -> str:
-    value = str(rarity or "").strip().lower()
-    if not value:
-        return "Unknown"
-
-    aliases = {
-        "common": "Common",
-        "uncommon": "Uncommon",
-        "rare": "Rare",
-        "mythic": "Mythic",
-        "mythic rare": "Mythic",
-        "special": "Special",
-    }
-    return aliases.get(value, value.capitalize())
+        except Exception as e:
+            logger.exception("Erreur lors du changement de collection")
+            self.window.show_error(f"Erreur lors du changement de collection : {str(e)}")
 
 
 if __name__ == "__main__":

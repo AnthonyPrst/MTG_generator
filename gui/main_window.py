@@ -71,7 +71,6 @@ class MainWindow(QMainWindow):
             "numb_ramp_label": "Ramp:",
             "numb_draw_label": "Draw:",
             "numb_removal_label": "Removal:",
-            "numb_boardwipe_label": "Boardwipe:",
             "numb_wincondition_label": "Win conditions:",
             "about_title": "Créé par : ManaLab",
             "about_subtitle": f"Version : {VERSION}",
@@ -115,7 +114,6 @@ class MainWindow(QMainWindow):
             "numb_ramp_label": "Ramp:",
             "numb_draw_label": "Draw:",
             "numb_removal_label": "Removal:",
-            "numb_boardwipe_label": "Boardwipe:",
             "numb_wincondition_label": "Win conditions:",
             "about_title": "Created by: ManaLab",
             "about_subtitle": f"Version : {VERSION}",
@@ -230,6 +228,7 @@ class MainWindow(QMainWindow):
         ct.import_requested.connect(self.app.import_collection)
         ct.export_requested.connect(self.app.export_collection)
         ct.delete_requested.connect(self.app.delete_collection)
+        ct.collection_switched.connect(self.app.switch_collection)
 
     def _connect_settings_tab(self):
         st = self.settings_tab
@@ -343,10 +342,6 @@ class MainWindow(QMainWindow):
     @property
     def numb_removal(self):
         return self.settings_tab.numb_removal
-
-    @property
-    def numb_boardwipe(self):
-        return self.settings_tab.numb_boardwipe
 
     @property
     def numb_wincondition(self):
@@ -493,7 +488,7 @@ class MainWindow(QMainWindow):
             self,
             "Format d'import",
             "Import depuis:",
-            ["Détection automatique", "ManaBox - Collection", "CardNexus"],
+            ["Détection automatique", "ManaBox - Collection", "CardNexus", "MTG Arena"],
             0,
             False,
         )
@@ -742,7 +737,6 @@ class MainWindow(QMainWindow):
         st.numb_ramp.setValue(profile.ramp)
         st.numb_draw.setValue(profile.draw)
         st.numb_removal.setValue(profile.removal)
-        st.numb_boardwipe.setValue(profile.boardwipe)
         st.numb_wincondition.setValue(profile.wincon)
         st.numb_min_land.setValue(profile.min_lands)
         st.numb_max_land.setValue(profile.max_lands)

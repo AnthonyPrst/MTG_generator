@@ -141,19 +141,19 @@ class ManaBoxFormat(ImportFormat):
 
 class CardNexusFormat(ImportFormat):
     """Format d'import pour CardNexus."""
-    
+
     @property
     def name(self) -> str:
         return "CardNexus"
-    
+
     @property
     def required_columns(self) -> Set[str]:
         return {'totalQtyOwned', 'name', 'expansion', 'printNumber', 'language', 'condition'}
-    
+
     @property
     def optional_columns(self) -> Set[str]:
         return {'finish', 'rarity', 'price', 'color', 'colorIdentity', 'types', 'variant'}
-    
+
     @staticmethod
     def _extract_from_card_data(card_data: Dict) -> tuple:
         """Extrait les infos utiles d'un dict Scryfall."""
@@ -164,11 +164,11 @@ class CardNexusFormat(ImportFormat):
         set_code = card_data.get('set', '').upper()
         collector_number = card_data.get('collector_number', '')
         image = ''
-        
+
         if 'image_uris' in card_data:
             urls = card_data['image_uris']
             image = urls.get('normal') or urls.get('large') or urls.get('png', '')
-        
+
         faces = card_data.get('card_faces')
         if faces and not image:
             for face in faces:
@@ -176,14 +176,14 @@ class CardNexusFormat(ImportFormat):
                 if urls:
                     image = urls.get('normal') or urls.get('large') or urls.get('png', '')
                     break
-        
+
         return oracle_id, scryfall_id, types, colors, set_code, collector_number, image
 
     @staticmethod
     def _looks_like_set_code(value: str) -> bool:
         token = str(value or "").strip()
         return bool(token) and len(token) <= 6 and token.replace("-", "").isalnum()
-    
+
     def process_row(self, row: Dict[str, str], external_provider, bulk_provider=None) -> Dict[str, Any]:
         card_name = self.get_column_value(row, 'name')
         set_name = self.get_column_value(row, 'expansion')
@@ -194,7 +194,7 @@ class CardNexusFormat(ImportFormat):
         elif set_code_input:
             resolved_set_code = set_code_input.lower()
         collector_number = self.get_column_value(row, 'printNumber')
-        
+
         oracle_id, image, types, colors, scryfall_id, set_code_from_api, collector_number_from_api = "", "", "", [], "", "", ""
         matched_exact_print = False
 
@@ -223,7 +223,7 @@ class CardNexusFormat(ImportFormat):
             if exact_card_data:
                 oracle_id, scryfall_id, types, colors, set_code_from_api, collector_number_from_api, image = self._extract_from_card_data(exact_card_data)
                 matched_exact_print = bool(scryfall_id)
-        
+
         # 3. Fallback API seulement si aucun résultat exploitable
         if not matched_exact_print and not types and external_provider:
             try:
@@ -231,7 +231,7 @@ class CardNexusFormat(ImportFormat):
                 oracle_id, scryfall_id, types, colors, set_code_from_api, collector_number_from_api, image = self._extract_from_card_data(card_data)
             except Exception as e:
                 logger.warning(f"Impossible de trouver les données pour {card_name}: {e}")
-        
+
         if not colors and types and 'Land' not in types:
             colors = ['colorless']
 
@@ -256,7 +256,7 @@ class CardNexusFormat(ImportFormat):
 
         effective_set_code = set_code_from_api if matched_exact_print else resolved_set_code
         effective_collector_number = collector_number_from_api if matched_exact_print else collector_number
-        
+
         return {
             'name': card_name,
             'colors': str(colors),
@@ -275,10 +275,129 @@ class CardNexusFormat(ImportFormat):
         }
 
 
+class MTGArenaFormat(ImportFormat):
+    """Format d'import pour MTG Arena."""
+
+    @property
+    def name(self) -> str:
+        return "MTG Arena"
+
+    @property
+    def required_columns(self) -> Set[str]:
+        return {'Card Name', 'Set Name', 'Set Code', 'Card Number', 'Quantity'}
+
+    @property
+    def optional_columns(self) -> Set[str]:
+        return set()
+
+    @staticmethod
+    def _extract_from_card_data(card_data: Dict) -> tuple:
+        """Extrait les infos utiles d'un dict Scryfall."""
+        oracle_id = card_data.get('oracle_id', '')
+        scryfall_id = card_data.get('id', '')
+        types = card_data.get('type_line', '')
+        colors = card_data.get('color_identity', [])
+        set_code = card_data.get('set', '').upper()
+        collector_number = card_data.get('collector_number', '')
+        image = ''
+
+        if 'image_uris' in card_data:
+            urls = card_data['image_uris']
+            image = urls.get('normal') or urls.get('large') or urls.get('png', '')
+
+        faces = card_data.get('card_faces')
+        if faces and not image:
+            for face in faces:
+                urls = face.get('image_uris')
+                if urls:
+                    image = urls.get('normal') or urls.get('large') or urls.get('png', '')
+                    break
+
+        return oracle_id, scryfall_id, types, colors, set_code, collector_number, image
+
+    def process_row(self, row: Dict[str, str], external_provider, bulk_provider=None) -> Dict[str, Any]:
+        card_name = self.get_column_value(row, 'Card Name')
+
+        # Skip les cartes avec des noms invalides (commençant par "Card_")
+        if card_name.startswith('Card_'):
+            logger.warning(f"Carte ignorée : nom invalide '{card_name}'")
+            raise ValueError(f"Nom de carte invalide : {card_name}")
+
+        set_name = self.get_column_value(row, 'Set Name')
+        set_code = self.get_column_value(row, 'Set Code')
+        collector_number = self.get_column_value(row, 'Card Number')
+        quantity = int(self.get_column_value(row, 'Quantity', '1'))
+
+        # Résoudre le nom du set si c'est "Unknown" mais qu'on a un code de set valide
+        if set_name.lower() == 'unknown' and set_code and external_provider:
+            try:
+                resolved_set_name = external_provider.resolve_set_name(set_code=set_code)
+                if resolved_set_name and resolved_set_name.lower() != 'unknown':
+                    set_name = resolved_set_name
+            except Exception:
+                pass
+
+        oracle_id, image, types, colors, scryfall_id = "", "", "", [], ""
+
+        # 1. Essayer le bulk data local (rapide)
+        if bulk_provider:
+            card_data = bulk_provider.get_card_for_import(card_name=card_name)
+            if card_data:
+                oracle_id, scryfall_id, types, colors, set_code_from_api, collector_number_from_api, image = self._extract_from_card_data(card_data)
+
+                # Valider que le set code et collector number correspondent
+                if set_code_from_api and collector_number_from_api:
+                    if set_code_from_api.lower() == set_code.lower() and collector_number_from_api.strip().lower() == collector_number.strip().lower():
+                        # Match exact, utiliser les données du bulk
+                        pass
+                    else:
+                        # Même nom mais pas la même impression, garder les données du CSV
+                        scryfall_id = ""
+
+        # 2. Fallback API seulement si bulk n'a pas trouvé ou n'a pas matché exactement
+        if not types and external_provider:
+            try:
+                card_data = external_provider.get_scryfall_data(card_name)
+                oracle_id, scryfall_id, types, colors, set_code_from_api, collector_number_from_api, image = self._extract_from_card_data(card_data)
+            except Exception as e:
+                logger.warning(f"Impossible de trouver les données pour {card_name}: {e}")
+
+        if not colors and types and 'Land' not in types:
+            colors = ['colorless']
+
+        # Fallback ID si pas de scryfall_id
+        if not scryfall_id:
+            fallback_key_parts = [
+                "mtga",
+                card_name.lower(),
+                set_code.lower(),
+                collector_number.lower(),
+            ]
+            scryfall_id = "::".join(fallback_key_parts)
+
+        return {
+            'name': card_name,
+            'colors': str(colors),
+            'types': types,
+            'scryfall_id': scryfall_id,
+            'oracle_id': oracle_id,
+            'set_code': set_code,
+            'set_name': set_name,
+            'collector_number': collector_number,
+            'image_url': image,
+            'foil': 0,  # MTG Arena n'a pas de foil dans ce format
+            'rarity': '',
+            'quantity': quantity,
+            'card_condition': '',
+            'language': 'English'  # MTG Arena est principalement en anglais
+        }
+
+
 # Registre des formats d'import
 IMPORT_FORMATS = {
     "ManaBox - Collection": ManaBoxFormat(),
     "CardNexus": CardNexusFormat(),
+    "MTG Arena": MTGArenaFormat(),
 }
 
 

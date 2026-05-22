@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import logging
 from typing import Dict, List, Optional, Set, Iterable, Any
 from mtg import constants as cts
 from mtg.deck_strategies import StrategyManager, DeckStrategy
@@ -8,23 +9,23 @@ from mtg.deck_strategies import StrategyManager, DeckStrategy
 # Rôles principaux gérés par le système de scoring
 ROLE_RAMP = "Ramp"
 ROLE_DRAW = "Draw"
-ROLE_REMOVAL = "Removal"  # target removal
-ROLE_BOARDWIPE = "Boardwipe"
+ROLE_REMOVAL = "Removal"
 ROLE_WINCON = "Finisher"
 
-PRIMARY_ROLES = {ROLE_RAMP, ROLE_DRAW, ROLE_REMOVAL, ROLE_BOARDWIPE, ROLE_WINCON}
+PRIMARY_ROLES = {ROLE_RAMP, ROLE_DRAW, ROLE_REMOVAL, ROLE_WINCON}
 
 
 # Poids par rôle pour le scoring (spec utilisateur)
 ROLE_WEIGHTS: Dict[str, float] = {
     ROLE_RAMP: 0.9,
     ROLE_DRAW: 0.7,
-    ROLE_REMOVAL: 0.3,
-    ROLE_BOARDWIPE: 0.6,
+    ROLE_REMOVAL: 0.5,
     ROLE_WINCON: 1,
 }
 
 DEFAULT_ROLE_WEIGHT = 0.2
+
+logger = logging.getLogger(__name__)
 
 
 # Terrains de base autorisant les duplicatas
@@ -59,7 +60,41 @@ class Deck:
     """
 
     commander: str
-    cards: List[Dict]
+    cards: List["BuiltDeckCard"]
+
+
+@dataclass
+class BuiltDeckCard:
+    name: str
+    types: str
+    role: str
+    score: float
+    cmc: float
+    scryfall_id: Optional[str]
+    image_url: Optional[str]
+    colors: Any
+    set_code: str = ""
+    set_name: str = ""
+    collector_number: str = ""
+    rarity: str = ""
+    selection_stage: str = ""
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "name": self.name,
+            "types": self.types,
+            "role": self.role,
+            "score": self.score,
+            "cmc": self.cmc,
+            "scryfall_id": self.scryfall_id,
+            "image_url": self.image_url,
+            "colors": self.colors,
+            "set_code": self.set_code,
+            "set_name": self.set_name,
+            "collector_number": self.collector_number,
+            "rarity": self.rarity,
+            "selection_stage": self.selection_stage,
+        }
 
 
 class DeckBuilder:
@@ -100,6 +135,7 @@ class DeckBuilder:
             if commander_data:
                 self.commander_synergies = self.strategy_manager.detect_commander_synergies(commander_data)
         except Exception:
+            logger.exception("Impossible de charger les données Scryfall du commandant '%s'", self.commander_name)
             self.commander_synergies = []
 
 
@@ -132,6 +168,77 @@ class DeckBuilder:
             cmc = self.app.external_provider.get_card_cmc(scryfall_id)
 
         return float(cmc or 0)
+
+    def _get_card_role(self, entry: Dict[str, Any]) -> str:
+        return str(entry.get("defaultCategory") or entry.get("role") or "")
+
+    def _make_selected_card_item(
+        self,
+        info: Dict[str, Any],
+        score_by_name: Dict[str, float],
+        role_by_name: Dict[str, str],
+        selection_stage: str,
+    ) -> BuiltDeckCard:
+        card_name = info.get("name", "")
+        return BuiltDeckCard(
+            name=card_name,
+            types=info.get("types", ""),
+            role=role_by_name.get(card_name) or self._get_card_role(info),
+            score=score_by_name.get(card_name, 0.0),
+            cmc=self._get_card_cmc(info),
+            scryfall_id=info.get("scryfall_id"),
+            image_url=info.get("image_url"),
+            colors=info.get("colors", ""),
+            set_code=info.get("set_code", ""),
+            set_name=info.get("set_name", ""),
+            collector_number=info.get("collector_number", ""),
+            rarity=info.get("rarity", ""),
+            selection_stage=selection_stage,
+        )
+
+    def _make_commander_fallback_item(self, score_by_name: Dict[str, float], selection_stage: str) -> BuiltDeckCard:
+        commander_data: Dict[str, Any] = {}
+        try:
+            commander_data = self.app.external_provider.get_scryfall_data(self.commander_name) or {}
+        except Exception:
+            logger.exception("Impossible de récupérer le commandant '%s' depuis Scryfall", self.commander_name)
+
+        image_url = None
+        if "image_uris" in commander_data:
+            urls = commander_data["image_uris"]
+            image_url = (
+                urls.get("normal")
+                or urls.get("large")
+                or urls.get("png")
+            )
+        faces = commander_data.get("card_faces")
+        if faces and not image_url:
+            for face in faces:
+                urls = face.get("image_uris")
+                if urls:
+                    image_url = (
+                        urls.get("normal")
+                        or urls.get("large")
+                        or urls.get("png")
+                    )
+                    if image_url:
+                        break
+
+        return BuiltDeckCard(
+            name=self.commander_name,
+            types=commander_data.get("type_line", ""),
+            role=ROLE_WINCON,
+            score=score_by_name.get(self.commander_name, 1.0),
+            cmc=commander_data.get("cmc", 0) or 0,
+            scryfall_id=commander_data.get("id"),
+            image_url=image_url,
+            colors=commander_data.get("color_identity", sorted(self.commander_colors)),
+            rarity=commander_data.get("rarity", ""),
+            set_code=commander_data.get("set", ""),
+            set_name=commander_data.get("set_name", ""),
+            collector_number=commander_data.get("collector_number", ""),
+            selection_stage=selection_stage,
+        )
 
 
     def score_cards(self) -> List[Dict[str, Any]]:
@@ -204,7 +311,7 @@ class DeckBuilder:
                 if rank_score < 0.0:
                     rank_score = 0.0
 
-            role = entry.get("defaultCategory")
+            role = self._get_card_role(entry)
             role_weight = self._get_role_weight(role)
 
             final = 0.65 * meta_score + 0.25 * rank_score + 0.10 * role_weight
@@ -248,13 +355,19 @@ class DeckBuilder:
             ROLE_RAMP: window.numb_ramp.value(),
             ROLE_DRAW: window.numb_draw.value(),
             ROLE_REMOVAL: window.numb_removal.value(),
-            ROLE_BOARDWIPE: window.numb_boardwipe.value(),
             ROLE_WINCON: window.numb_wincondition.value(),
         }
 
         # Préparation des structures de sélection
         selected: List[str] = []
         selected_set: Set[str] = set()
+        selection_stage_by_index: Dict[int, str] = {}
+
+        def _add_selected_card(name: str, selection_stage: str) -> None:
+            selected.append(name)
+            selection_stage_by_index[len(selected) - 1] = selection_stage
+            if name not in BASIC_LANDS:
+                selected_set.add(name)
 
         # Mapping rapide name -> (score, role)
         score_by_name: Dict[str, float] = {}
@@ -282,34 +395,8 @@ class DeckBuilder:
         commander_in_candidates = self.commander_name in nonland_candidates or self.commander_name in land_candidates
         if not commander_in_candidates:
             try:
-                # data = self.app.external_provider.get_scryfall_data(self.commander_name)
-                # types = data.get("type_line", "")
-                # scryfall_id = data.get("id")
-
-                # image_url = None
-                # if "image_uris" in data:
-                #     urls = data["image_uris"]
-                #     image_url = (
-                #         urls.get("normal")
-                #         or urls.get("large")
-                #         or urls.get("png")
-                #     )
-                # faces = data.get("card_faces")
-                # if faces and not image_url:
-                #     for face in faces:
-                #         urls = face.get("image_uris")
-                #         if urls:
-                #             image_url = (
-                #                 urls.get("normal")
-                #                 or urls.get("large")
-                #                 or urls.get("png")
-                #             )
-                #             if image_url:
-                #                 break
-
                 # On ajoute le commandant comme première carte sélectionnée
-                selected.append(self.commander_name)
-                selected_set.add(self.commander_name)
+                _add_selected_card(self.commander_name, "commander_seed")
                 score_by_name.setdefault(self.commander_name, 1.0)
                 role_by_name.setdefault(self.commander_name, ROLE_WINCON)
                 # S'assurer qu'on garde une place pour lui dans le total de 100
@@ -317,12 +404,21 @@ class DeckBuilder:
             except Exception:
                 # Si l'appel à Scryfall échoue, on ne force pas l'ajout
                 pass
+        else:
+            # Le commandant est dans les candidats, on l'ajoute explicitement
+            # avec le bon stage pour éviter qu'il soit sélectionné par erreur
+            _add_selected_card(self.commander_name, "commander_seed")
+            score_by_name.setdefault(self.commander_name, 1.0)
+            role_by_name.setdefault(self.commander_name, ROLE_WINCON)
 
         # 1) Sélection par rôles (hors terrains)
         current_role_counts: Dict[str, int] = {r: 0 for r in PRIMARY_ROLES}
 
         for name in nonland_candidates:
             if name in selected_set:
+                continue
+            # Ignorer le commandant ici, il sera traité explicitement
+            if name == self.commander_name:
                 continue
 
             role = role_by_name.get(name)
@@ -333,8 +429,7 @@ class DeckBuilder:
             if current_role_counts[role] >= max_for_role:
                 continue
 
-            selected.append(name)
-            selected_set.add(name)
+            _add_selected_card(name, f"role:{role}")
             current_role_counts[role] += 1
 
             if len(selected) >= 100:
@@ -349,12 +444,14 @@ class DeckBuilder:
                 break
             if name in selected_set:
                 continue
+            # Ignorer le commandant ici, il sera traité explicitement
+            if name == self.commander_name:
+                continue
             role = role_by_name.get(name)
             if role in PRIMARY_ROLES:
                 continue
 
-            selected.append(name)
-            selected_set.add(name)
+            _add_selected_card(name, "fill:nonland")
 
         # 3) Ajout des terrains
         remaining_slots = 100 - len(selected)
@@ -376,8 +473,7 @@ class DeckBuilder:
                 if name in selected_set:
                     continue
 
-                selected.append(name)
-                selected_set.add(name)
+                _add_selected_card(name, "land:distinct")
                 lands_added += 1
 
             # b) Compléter avec des terrains de base (duplicatas autorisés)
@@ -389,7 +485,7 @@ class DeckBuilder:
                 idx = 0
                 while lands_added < desired_lands and len(selected) < 100:
                     name = basic_candidates[idx % len(basic_candidates)]
-                    selected.append(name)
+                    _add_selected_card(name, "land:basic_fill")
                     lands_added += 1
                     idx += 1
 
@@ -405,8 +501,7 @@ class DeckBuilder:
             idx = 0
             while remaining_slots > 0 and list_of_candidate:
                 name = list_of_candidate[idx % len(list_of_candidate)]
-                selected.append(name)
-                selected_set.add(name)
+                _add_selected_card(name, "fill:collection_limit")
                 remaining_slots -= 1
                 idx += 1
 
@@ -414,78 +509,42 @@ class DeckBuilder:
         if len(selected) > 100:
             selected = selected[:100]
             
-        list_info_selected = []
+        list_info_selected: List[BuiltDeckCard] = []
         cts.DECK_BUILD_SCRYFALL_ID_LIST = []
+        info_by_name: Dict[str, Dict[str, Any]] = {}
         for info in self.deck_data:
-            if info["name"] in selected:
+            name = info.get("name")
+            if name and name not in info_by_name:
+                info_by_name[name] = info
+
+        for selected_index, card_name in enumerate(selected):
+            selection_stage = selection_stage_by_index.get(selected_index, "")
+            info = info_by_name.get(card_name)
+            if info is None:
+                if card_name == self.commander_name:
+                    commander_item = self._make_commander_fallback_item(score_by_name, selection_stage or "commander_fallback")
+                    list_info_selected.append(commander_item)
+                    if commander_item.scryfall_id:
+                        cts.DECK_BUILD_SCRYFALL_ID_LIST.append(commander_item.scryfall_id)
+                    continue
+                logger.warning("Carte sélectionnée absente des données candidates: %s", card_name)
+                continue
+
+            list_info_selected.append(self._make_selected_card_item(info, score_by_name, role_by_name, selection_stage))
+            if info.get("scryfall_id"):
                 cts.DECK_BUILD_SCRYFALL_ID_LIST.append(info["scryfall_id"])
-                items = {
-                    "name": info["name"],
-                    "types": info["types"],
-                    "role": info["defaultCategory"],
-                    "score": score_by_name[info["name"]],
-                    "cmc": self._get_card_cmc(info),
-                    "scryfall_id": info["scryfall_id"],
-                    "image_url": info["image_url"],
-                    "colors": info.get("colors", ""),
-                    # Données pour filtres
-                    "set_code": info.get("set_code", ""),
-                    "set_name": info.get("set_name", ""),
-                    "collector_number": info.get("collector_number", ""),
-                    "rarity": info.get("rarity", ""),
-                }
-                list_info_selected.append(items)
 
         # Si le commandant n'est pas présent dans les cartes sélectionnées
         # (parce qu'il n'est pas dans la collection), on l'ajoute quand même
         # en allant chercher ses informations via Scryfall.
         commander_already_in_deck = any(
-            card["name"] == self.commander_name for card in list_info_selected
+            card.name == self.commander_name for card in list_info_selected
         )
         if not commander_already_in_deck:
-            try:
-                data = self.app.external_provider.get_scryfall_data(self.commander_name)
-                types = data.get("type_line", "")
-                scryfall_id = data.get("id")
-
-                image_url = None
-                if "image_uris" in data:
-                    urls = data["image_uris"]
-                    image_url = (
-                        urls.get("normal")
-                        or urls.get("large")
-                        or urls.get("png")
-                    )
-                faces = data.get("card_faces")
-                if faces and not image_url:
-                    for face in faces:
-                        urls = face.get("image_uris")
-                        if urls:
-                            image_url = (
-                                urls.get("normal")
-                                or urls.get("large")
-                                or urls.get("png")
-                            )
-                            if image_url:
-                                break
-
-                commander_item = {
-                    "name": self.commander_name,
-                    "types": types,
-                    "role": ROLE_WINCON,
-                    "score": 1.0,
-                    "cmc": data.get("cmc", 0),
-                    "scryfall_id": scryfall_id,
-                    "image_url": image_url,
-                    "colors": data.get("color_identity", []),
-                    "rarity": data.get("rarity", ""),
-                }
-                list_info_selected.insert(0, commander_item)
-                if scryfall_id:
-                    cts.DECK_BUILD_SCRYFALL_ID_LIST.insert(0, scryfall_id)
-            except Exception:
-                # En cas d'échec, on laisse simplement le deck sans commandant
-                pass
+            commander_item = self._make_commander_fallback_item(score_by_name, "commander_fallback")
+            list_info_selected.insert(0, commander_item)
+            if commander_item.scryfall_id:
+                cts.DECK_BUILD_SCRYFALL_ID_LIST.insert(0, commander_item.scryfall_id)
 
         return Deck(commander=self.commander_name, cards=list_info_selected)
 

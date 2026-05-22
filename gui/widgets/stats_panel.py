@@ -414,6 +414,15 @@ class StatsPanel(QWidget):
         self.roles_widget.resetRequested.connect(self.role_distribution_reset)
         root.addWidget(self.roles_widget)
 
+        self.goals_title = SectionTitle("Objectifs du Deck")
+        root.addWidget(self.goals_title)
+        self.goals_summary_label = QLabel("")
+        self.goals_summary_label.setWordWrap(True)
+        self.goals_summary_label.setStyleSheet("color: #c9d1d9; font-size: 11px; line-height: 1.35;")
+        self.goals_summary_label.setAlignment(Qt.AlignLeft | Qt.AlignTop)
+        self.goals_summary_label.setVisible(False)
+        root.addWidget(self.goals_summary_label)
+
         root.addWidget(Divider())
 
         root.addWidget(SectionTitle("Répartition des Raretés"))
@@ -473,12 +482,13 @@ class StatsPanel(QWidget):
     def set_graphs(self, summary: Optional[dict]):
         summary = summary or {}
         self.mana_curve_widget.set_buckets(summary.get("buckets"))
+        self.goals_summary_label.setText(_format_goals_summary(summary))
+        self.goals_summary_label.setVisible(bool(self.goals_summary_label.text().strip()))
 
         role_palette = {
             "Ramp": "#3fb950",
             "Draw": "#79c0ff",
             "Removal": "#e06030",
-            "Boardwipe": "#da3633",
             "Finisher": "#bc8cff",
             "Land": "#8b6914",
             "Other": "#8b949e",
@@ -530,3 +540,41 @@ class StatsPanel(QWidget):
 
     def set_stats_text(self, stats_text: str):
         self.stats_summary_label.setText(stats_text)
+
+
+def _goal_status(current: int, target: int) -> str:
+    if current >= target:
+        return "OK"
+    if current >= max(0, target - 1):
+        return "Proche"
+    return "Bas"
+
+
+def _format_goals_summary(summary: Optional[dict]) -> str:
+    summary = summary or {}
+    targets = summary.get("targets") or {}
+    role_targets = targets.get("roles") or {}
+    roles = summary.get("roles") or {}
+    lands = int(summary.get("lands", 0) or 0)
+    lines: list[str] = []
+
+    lands_min = targets.get("lands_min")
+    lands_max = targets.get("lands_max")
+    if lands_min is not None and lands_max is not None:
+        if lands < lands_min:
+            land_status = "Bas"
+        elif lands > lands_max:
+            land_status = "Haut"
+        else:
+            land_status = "OK"
+        lines.append(f"Terrains : {lands} / cible {lands_min}-{lands_max}  ·  {land_status}")
+
+    for role in ["Ramp", "Draw", "Removal", "Finisher"]:
+        if role not in role_targets:
+            continue
+        target = int(role_targets.get(role, 0) or 0)
+        current = int(roles.get(role, 0) or 0)
+        status = _goal_status(current, target)
+        lines.append(f"{role} : {current} / {target}  ·  {status}")
+
+    return "\n".join(lines)

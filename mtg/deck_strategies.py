@@ -21,7 +21,6 @@ class StrategyProfile:
     ramp: int
     draw: int
     removal: int
-    boardwipe: int
     wincon: int
     min_lands: int
     max_lands: int
@@ -35,8 +34,7 @@ STRATEGY_PROFILES: Dict[DeckStrategy, StrategyProfile] = {
         name="Aggro",
         ramp=8,
         draw=6,
-        removal=6,
-        boardwipe=2,
+        removal=8,
         wincon=8,
         min_lands=32,
         max_lands=35,
@@ -47,8 +45,7 @@ STRATEGY_PROFILES: Dict[DeckStrategy, StrategyProfile] = {
         name="Control",
         ramp=14,
         draw=14,
-        removal=10,
-        boardwipe=6,
+        removal=16,
         wincon=4,
         min_lands=38,
         max_lands=42,
@@ -59,9 +56,8 @@ STRATEGY_PROFILES: Dict[DeckStrategy, StrategyProfile] = {
         name="Combo",
         ramp=14,
         draw=14,
-        removal=6,
-        boardwipe=4,
-        wincon=8,  # Pieces du combo
+        removal=10,
+        wincon=8,
         min_lands=34,
         max_lands=38,
         cmc_target=3.0,
@@ -71,8 +67,7 @@ STRATEGY_PROFILES: Dict[DeckStrategy, StrategyProfile] = {
         name="Midrange",
         ramp=10,
         draw=8,
-        removal=8,
-        boardwipe=4,
+        removal=12,
         wincon=6,
         min_lands=36,
         max_lands=38,
@@ -83,8 +78,7 @@ STRATEGY_PROFILES: Dict[DeckStrategy, StrategyProfile] = {
         name="Budget",
         ramp=12,
         draw=10,
-        removal=8,
-        boardwipe=4,
+        removal=12,
         wincon=6,
         min_lands=36,
         max_lands=38,
@@ -165,7 +159,6 @@ class StrategyManager:
             "ramp": profile.ramp,
             "draw": profile.draw,
             "removal": profile.removal,
-            "boardwipe": profile.boardwipe,
             "wincon": profile.wincon,
             "min_lands": profile.min_lands,
             "max_lands": profile.max_lands,

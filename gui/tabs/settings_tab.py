@@ -115,10 +115,6 @@ class SettingsTab(QWidget):
         self.numb_removal = make_spin(1, 20, 8)
         deck_form.addRow(self.numb_removal_label, self.numb_removal)
 
-        self.numb_boardwipe_label = QLabel("Boardwipe:")
-        self.numb_boardwipe = make_spin(1, 20, 4)
-        deck_form.addRow(self.numb_boardwipe_label, self.numb_boardwipe)
-
         self.numb_wincondition_label = QLabel("Win conditions:")
         self.numb_wincondition = make_spin(1, 20, 6)
         deck_form.addRow(self.numb_wincondition_label, self.numb_wincondition)
@@ -228,7 +224,6 @@ class SettingsTab(QWidget):
         self.numb_ramp_label.setText(t.get("numb_ramp_label", "Ramp:"))
         self.numb_draw_label.setText(t.get("numb_draw_label", "Draw:"))
         self.numb_removal_label.setText(t.get("numb_removal_label", "Removal:"))
-        self.numb_boardwipe_label.setText(t.get("numb_boardwipe_label", "Boardwipe:"))
         self.numb_wincondition_label.setText(t.get("numb_wincondition_label", "Win conditions:"))
 
         self.about_title_label.setText(t.get("about_title", "Créé par : ManaLab"))
