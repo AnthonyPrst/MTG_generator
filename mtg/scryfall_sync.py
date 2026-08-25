@@ -9,6 +9,8 @@ import requests
 import logging
 from datetime import datetime, timedelta
 
+from mtg.scryfall_http import SCRYFALL_HEADERS
+
 logger = logging.getLogger(__name__)
 
 
@@ -79,7 +81,7 @@ class ScryfallSyncManager:
         """Récupère les métadonnées des bulk data depuis Scryfall."""
         try:
             time.sleep(0.1)  # Rate limiting
-            response = requests.get(self.BULK_API_URL, timeout=30)
+            response = requests.get(self.BULK_API_URL, headers=SCRYFALL_HEADERS, timeout=30)
             response.raise_for_status()
             return response.json()
         except Exception as e:
@@ -101,7 +103,7 @@ class ScryfallSyncManager:
         
         try:
             time.sleep(0.1)  # Rate limiting
-            response = requests.get(url, stream=True, timeout=300)
+            response = requests.get(url, stream=True, headers=SCRYFALL_HEADERS, timeout=300)
             response.raise_for_status()
             
             total_size = int(response.headers.get('content-length', 0))

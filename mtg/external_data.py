@@ -7,6 +7,8 @@ import requests
 from pathlib import Path
 import logging
 
+from mtg.scryfall_http import SCRYFALL_HEADERS
+
 logger = logging.getLogger(__name__)
 
 class ExternalDataProvider:
@@ -95,7 +97,7 @@ class ExternalDataProvider:
         try:
             while next_url:
                 time.sleep(0.075)
-                response = requests.get(next_url, timeout=20)
+                response = requests.get(next_url, headers=SCRYFALL_HEADERS, timeout=20)
                 response.raise_for_status()
                 payload = response.json()
 
@@ -164,7 +166,7 @@ class ExternalDataProvider:
         try:
             time.sleep(0.075)
             url = "https://api.scryfall.com/sets"
-            response = requests.get(url, timeout=10)
+            response = requests.get(url, headers=SCRYFALL_HEADERS, timeout=10)
             response.raise_for_status()
             data = response.json()
 
@@ -179,7 +181,7 @@ class ExternalDataProvider:
             next_url = data.get("next_page")
             while next_url:
                 time.sleep(0.075)
-                response = requests.get(next_url, timeout=10)
+                response = requests.get(next_url, headers=SCRYFALL_HEADERS, timeout=10)
                 response.raise_for_status()
                 data = response.json()
                 for set_data in data.get("data", []):
@@ -206,7 +208,7 @@ class ExternalDataProvider:
         try:
             time.sleep(0.075)
             url = f"https://api.scryfall.com/cards/{resolved_set_code}/{collector_number}"
-            response = requests.get(url, timeout=10)
+            response = requests.get(url, headers=SCRYFALL_HEADERS, timeout=10)
             response.raise_for_status()
             data = response.json()
             self._scryfall_cache[cache_key] = data
@@ -291,16 +293,16 @@ class ExternalDataProvider:
             time.sleep(0.075)
             if is_uuid_like:
                 url = f"https://api.scryfall.com/cards/{identifier}"
-                response = requests.get(url)
+                response = requests.get(url, headers=SCRYFALL_HEADERS)
             elif set_code and collector_number:
                 # Recherche par set et numéro (plus précise)
                 url = f"https://api.scryfall.com/cards/{set_code.lower()}/{collector_number}"
-                response = requests.get(url)
+                response = requests.get(url, headers=SCRYFALL_HEADERS)
             else:
                 # Recherche par nom exact
                 url = "https://api.scryfall.com/cards/named"
                 params = {"exact": identifier}
-                response = requests.get(url, params=params)
+                response = requests.get(url, params=params, headers=SCRYFALL_HEADERS)
 
             response.raise_for_status()  # Lève une exception pour les codes d'erreur HTTP
             card_data = response.json()

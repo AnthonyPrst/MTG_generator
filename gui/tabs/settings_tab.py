@@ -14,6 +14,7 @@ class SettingsTab(QWidget):
 
     sync_requested = Signal()
     language_changed = Signal(str)
+    check_updates_requested = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -172,6 +173,11 @@ class SettingsTab(QWidget):
         for lbl in (self.about_title_label, self.about_subtitle_label, self.about_contact_label, self.about_youtube_label):
             ab_layout.addWidget(lbl)
 
+        self.check_updates_btn = QPushButton("🔄  Vérifier les mises à jour")
+        self.check_updates_btn.setMinimumHeight(32)
+        self.check_updates_btn.clicked.connect(self.check_updates_requested)
+        ab_layout.addWidget(self.check_updates_btn)
+
         layout.addWidget(grp_about)
         layout.addStretch()
 
@@ -197,6 +203,12 @@ class SettingsTab(QWidget):
         else:
             self.sync_status_label.setText("✗  Non synchronisé")
             self.sync_status_label.setStyleSheet("color: #8b949e; font-size: 12px;")
+
+    def set_update_check_loading(self, loading: bool):
+        self.check_updates_btn.setEnabled(not loading)
+        self.check_updates_btn.setText(
+            "Vérification en cours…" if loading else "🔄  Vérifier les mises à jour"
+        )
 
     def set_sync_loading(self, loading: bool):
         self.sync_scryfall_btn.setEnabled(not loading)

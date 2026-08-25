@@ -4,6 +4,24 @@ All notable changes to this project are documented in this file.
 
 The format is inspired by `Keep a Changelog`, and versioning follows `SemVer` where practical.
 
+## [v1.8.0] - 2026-08-25
+
+### Added
+
+- Automatic and manual update checker based on GitHub Releases, with a "Vérifier les mises à jour" button in the Settings tab.
+- Update dialog now renders the GitHub release notes (Markdown) and lets the user download and launch the installer directly from the app.
+- The main window now adapts its size and position to the user's screen resolution instead of using a fixed size.
+
+### Changed
+
+- The sidebar and stats panel now keep a fixed, screen-proportional width so heavy center content (deck table, image gallery) can no longer shrink them after a deck is generated.
+- The deck image gallery column count now adapts to the available width instead of always using 4 fixed columns.
+- All Scryfall API requests now send a custom `User-Agent` and `Accept` header (`mtg.scryfall_http.SCRYFALL_HEADERS`), as Scryfall now rejects the default `requests` user agent.
+
+### Fixed
+
+- Fixed intermittent Scryfall API request failures (`400 generic_user_agent`) across sync, card image preview, EDHREC analytics, and external data lookups.
+
 ## [v1.7.0] - 2026-05-18
 
 ### Added

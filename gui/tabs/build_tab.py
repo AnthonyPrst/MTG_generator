@@ -7,6 +7,8 @@ from threading import Lock
 import requests
 import time
 
+from mtg.scryfall_http import SCRYFALL_HEADERS
+
 from PySide6.QtWidgets import (
     QWidget, QHBoxLayout, QVBoxLayout, QSplitter,
     QPushButton, QLabel, QLineEdit, QComboBox, QScrollArea,
@@ -14,8 +16,8 @@ from PySide6.QtWidgets import (
     QTableWidgetItem, QHeaderView, QMenu, QProgressDialog, QSizePolicy,
     QApplication, QTabWidget, QDialog, QStyledItemDelegate, QListView,
 )
-from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QPixmap, QPainter, QColor, QBrush
+from PySide6.QtCore import Qt, Signal, QTimer
+from PySide6.QtGui import QPixmap, QPainter, QColor, QBrush, QGuiApplication
 
 from gui.widgets.card_image import open_card_image_dialog
 from gui.widgets.stats_panel import StatsPanel, SectionTitle
@@ -67,6 +69,15 @@ class BuildTab(QWidget):
     # Construction UI
     # ─────────────────────────────────────────────────────────────────────────
 
+    @staticmethod
+    def _available_screen_size() -> tuple:
+        """Retourne (width, height) de la zone disponible de l'écran principal."""
+        screen = QGuiApplication.primaryScreen()
+        if screen:
+            geo = screen.availableGeometry()
+            return geo.width(), geo.height()
+        return 1600, 900
+
     def _build_ui(self):
         root = QHBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -76,16 +87,48 @@ class BuildTab(QWidget):
         splitter = QSplitter(Qt.Horizontal)
         splitter.setChildrenCollapsible(False)
 
-        splitter.addWidget(self._build_sidebar())
-        splitter.addWidget(self._build_center())
-        splitter.addWidget(self._build_stats_panel())
+        sidebar_widget = self._build_sidebar()
+        center_widget = self._build_center()
+        stats_widget = self._build_stats_panel()
 
-        splitter.setSizes([350, 700, 350])
+        screen_w, _ = self._available_screen_size()
+        side_w = max(320, min(420, int(screen_w * 0.22)))
+
+        # Largeur fixe pour la sidebar et le panneau stats : seule la zone
+        # centrale (tableaux/galerie) doit s'étirer ou se rétrécir. Cela évite
+        # qu'un contenu volumineux au centre (galerie d'images, tableaux) ne
+        # vole de l'espace à ces panneaux lors d'un relayout (ex: après la
+        # génération du deck).
+        sidebar_widget.setFixedWidth(side_w)
+        stats_widget.setFixedWidth(side_w)
+
+        splitter.addWidget(sidebar_widget)
+        splitter.addWidget(center_widget)
+        splitter.addWidget(stats_widget)
+
+        center_w = max(500, screen_w - (side_w * 2))
+        splitter.setSizes([side_w, center_w, side_w])
         splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 1)
         splitter.setStretchFactor(2, 0)
 
+        self.main_splitter = splitter
+        self._side_panel_width = side_w
+
         root.addWidget(splitter)
+
+    def _enforce_main_splitter_sizes(self):
+        """Réapplique les largeurs sidebar/stats après un relayout (ex: chargement
+        de la galerie d'images) qui aurait pu réduire ces panneaux au profit du centre."""
+        splitter = getattr(self, "main_splitter", None)
+        if splitter is None:
+            return
+        total = sum(splitter.sizes()) or splitter.width()
+        if total <= 0:
+            return
+        side_w = getattr(self, "_side_panel_width", 350)
+        center_w = max(400, total - side_w * 2)
+        splitter.setSizes([side_w, center_w, side_w])
 
     def _build_sidebar(self) -> QWidget:
         """Sidebar gauche : commandant, stratégie, actions."""
@@ -341,7 +384,13 @@ class BuildTab(QWidget):
         gal_layout.addWidget(self.deck_images_area)
 
         inner_splitter.addWidget(gallery_widget)
-        inner_splitter.setSizes([200, 250, 200])
+        _, screen_h = self._available_screen_size()
+        content_h = max(500, screen_h - 160)
+        inner_splitter.setSizes([
+            int(content_h * 0.30),
+            int(content_h * 0.38),
+            int(content_h * 0.32),
+        ])
 
         layout.addWidget(inner_splitter)
         return center
@@ -903,7 +952,12 @@ class BuildTab(QWidget):
         self.clear_deck_images()
         self.card_index_to_widget = {}
         self.card_index_to_pixmap = {}
-        col_count = 4
+        area_width = (
+            self.deck_images_area.viewport().width()
+            or self.deck_images_area.width()
+            or 800
+        )
+        col_count = max(2, min(4, area_width // 210))
         self._deck_images_col_count = col_count
         total = len(cards_data)
         for idx, card in enumerate(cards_data):
@@ -936,6 +990,18 @@ class BuildTab(QWidget):
             value = str(identifier or "").strip().lower()
             return len(value) in (32, 36) and all(c in "0123456789abcdef-" for c in value)
 
+        def _throttled_scryfall_call(fn):
+            """Sérialise et espace les appels réseau vers api.scryfall.com
+            entre tous les threads du pool, pour respecter le rate limit."""
+            with scryfall_api_lock:
+                elapsed = time.time() - last_scryfall_api_call[0]
+                if elapsed < 0.12:
+                    time.sleep(0.12 - elapsed)
+                try:
+                    return fn()
+                finally:
+                    last_scryfall_api_call[0] = time.time()
+
         def _get_exact_print_image_url(card: Dict) -> Optional[str]:
             if not external_provider:
                 return None
@@ -946,18 +1012,13 @@ class BuildTab(QWidget):
             if not collector_number:
                 return None
 
-            with scryfall_api_lock:
-                elapsed = time.time() - last_scryfall_api_call[0]
-                if elapsed < 0.12:
-                    time.sleep(0.12 - elapsed)
-
-                url = external_provider.get_image_url_for_exact_print(
+            return _throttled_scryfall_call(
+                lambda: external_provider.get_image_url_for_exact_print(
                     set_code,
                     collector_number,
                     set_name=set_name,
                 )
-                last_scryfall_api_call[0] = time.time()
-                return url
+            )
 
         def _resolve_image_url(card: Dict) -> Optional[str]:
             card_name = str(card.get("name") or "").strip()
@@ -981,7 +1042,9 @@ class BuildTab(QWidget):
                     url = scryfall_sync.get_image_url(scryfall_id=scryfall_id, card_name=card_name)
                 if not url and external_provider:
                     try:
-                        url = external_provider.get_image_url_from_scryfall(scryfall_id)
+                        url = _throttled_scryfall_call(
+                            lambda: external_provider.get_image_url_from_scryfall(scryfall_id)
+                        )
                     except Exception:
                         url = None
             else:
@@ -1013,7 +1076,7 @@ class BuildTab(QWidget):
 
                 card["image_url"] = url
 
-                resp = requests.get(url, timeout=10)
+                resp = requests.get(url, headers=SCRYFALL_HEADERS, timeout=10)
                 resp.raise_for_status()
                 return idx, card, resp.content
             except Exception:
@@ -1058,6 +1121,7 @@ class BuildTab(QWidget):
 
         progress.setValue(total)
         self.apply_role_filter(self.deck_filter_role.currentText())
+        QTimer.singleShot(0, self._enforce_main_splitter_sizes)
 
     def apply_mana_filter(self, clicked_cmc: int):
         if self._cmc_filter == clicked_cmc:

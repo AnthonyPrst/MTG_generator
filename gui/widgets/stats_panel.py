@@ -340,7 +340,7 @@ class StatsPanel(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName("statsPanel")
-        self.setMinimumWidth(280)
+        self.setMinimumWidth(320)
         self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
 
         root = QVBoxLayout(self)

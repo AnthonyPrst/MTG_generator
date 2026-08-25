@@ -1,6 +1,7 @@
-VERSION = "1.7.0"
+VERSION = "1.8.0"
 CONTACT = "manalab7388@gmail.com"
 YOUTUBE_URL = "https://www.youtube.com/@ManaLab-FR"
+GITHUB_REPO = "AnthonyPrst/MTG_generator"
 
 CSV_PATH = None
 DB_PATH = "data/collection.db"

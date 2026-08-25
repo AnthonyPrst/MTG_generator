@@ -1,28 +1,35 @@
 """Fenêtre principale — orchestrateur léger, délègue aux sous-onglets."""
 
+import logging
+import os
+import tempfile
 import threading
 from pathlib import Path
 from typing import Optional, List, Dict
 
 from PySide6.QtWidgets import (
-    QApplication, QInputDialog, QMainWindow, QVBoxLayout, QWidget,
+    QApplication, QInputDialog, QMainWindow, QVBoxLayout, QHBoxLayout, QWidget,
     QFileDialog, QMessageBox, QTabWidget, QDialog,
-    QLabel, QPushButton,
+    QLabel, QPushButton, QProgressDialog, QTextBrowser,
 )
 from PySide6.QtCore import Qt, QTimer, Signal
-from PySide6.QtGui import QPixmap, QPainter, QIcon, QKeySequence as QKS
+from PySide6.QtGui import QPixmap, QPainter, QIcon, QGuiApplication, QKeySequence as QKS
 
 import requests
 
-from mtg.constants import VERSION, CONTACT
+from mtg.constants import VERSION, CONTACT, GITHUB_REPO
 from mtg.deck_strategies import DeckStrategy, StrategyManager, STRATEGY_PROFILES
 from mtg.scryfall_sync import ScryfallSyncManager
 from mtg.edhrec_analytics import EDHRecAnalytics
+from mtg.scryfall_http import SCRYFALL_HEADERS
+from mtg.update_checker import UpdateChecker, UpdateInfo
 
 from gui.styles.theme import DARK_THEME
 from gui.tabs.build_tab import BuildTab
 from gui.tabs.collection_tab import CollectionTab
 from gui.tabs.settings_tab import SettingsTab
+
+logger = logging.getLogger(__name__)
 
 
 class MainWindow(QMainWindow):
@@ -32,6 +39,10 @@ class MainWindow(QMainWindow):
     _sync_finished = Signal(bool)
     _sync_error = Signal(str)
     _commander_info_ready = Signal(str, str)
+    _update_check_finished = Signal(object, bool)
+    _update_download_progress = Signal(int)
+    _update_download_finished = Signal(str)
+    _update_download_error = Signal(str)
 
     TRANSLATIONS = {
         "fr": {
@@ -131,8 +142,7 @@ class MainWindow(QMainWindow):
         icon_path = Path(__file__).parent / "resource" / "icons8-boule-de-cristal-magique-100.png"
         if icon_path.exists():
             self.setWindowIcon(QIcon(str(icon_path)))
-        self.setMinimumSize(1400, 800)
-        self.resize(1980, 1200)
+        self._apply_adaptive_geometry()
 
         # Services partagés
         self.scryfall_sync = ScryfallSyncManager()
@@ -199,6 +209,31 @@ class MainWindow(QMainWindow):
         if current_cmd:
             self.update_commander_preview(current_cmd)
 
+        # Vérification silencieuse des mises à jour au démarrage
+        self._start_update_check(manual=False)
+
+    def _apply_adaptive_geometry(self):
+        """Adapte la taille/position de la fenêtre à l'écran de l'utilisateur."""
+        screen = self.screen() or QGuiApplication.primaryScreen()
+        available = screen.availableGeometry() if screen else None
+
+        if available is None:
+            self.setMinimumSize(1100, 650)
+            self.resize(1600, 900)
+            return
+
+        min_w = min(1100, available.width())
+        min_h = min(650, available.height())
+        self.setMinimumSize(min_w, min_h)
+
+        target_w = min(1980, int(available.width() * 0.92))
+        target_h = min(1200, int(available.height() * 0.92))
+        self.resize(target_w, target_h)
+
+        x = available.x() + max(0, (available.width() - target_w) // 2)
+        y = available.y() + max(0, (available.height() - target_h) // 2)
+        self.move(x, y)
+
     # ─────────────────────────────────────────────────────────────────────
     # Connexions
     # ─────────────────────────────────────────────────────────────────────
@@ -234,9 +269,14 @@ class MainWindow(QMainWindow):
         st = self.settings_tab
         st.sync_requested.connect(self._on_sync_scryfall)
         st.language_changed.connect(self.app.set_language)
+        st.check_updates_requested.connect(self._on_check_updates_clicked)
         self._sync_progress.connect(self._on_sync_progress)
         self._sync_finished.connect(self._on_sync_finished)
         self._sync_error.connect(self._on_sync_error)
+        self._update_check_finished.connect(self._on_update_check_finished)
+        self._update_download_progress.connect(self._on_update_download_progress)
+        self._update_download_finished.connect(self._on_update_download_finished)
+        self._update_download_error.connect(self._on_update_download_error)
 
     # ─────────────────────────────────────────────────────────────────────
     # Raccourcis clavier
@@ -512,7 +552,7 @@ class MainWindow(QMainWindow):
 
         def _load_pixmap(url: str) -> Optional[QPixmap]:
             try:
-                resp = requests.get(url, timeout=8)
+                resp = requests.get(url, headers=SCRYFALL_HEADERS, timeout=8)
                 resp.raise_for_status()
                 pix = QPixmap()
                 pix.loadFromData(resp.content)
@@ -889,3 +929,152 @@ class MainWindow(QMainWindow):
                 self._sync_finished.emit(False)
 
         threading.Thread(target=do_sync, daemon=True).start()
+
+    # ─────────────────────────────────────────────────────────────────────
+    # Vérification des mises à jour (GitHub Releases)
+    # ─────────────────────────────────────────────────────────────────────
+
+    def _on_check_updates_clicked(self):
+        self._start_update_check(manual=True)
+
+    def _start_update_check(self, manual: bool = False):
+        if manual:
+            self.settings_tab.set_update_check_loading(True)
+
+        def do_check():
+            info = None
+            try:
+                checker = UpdateChecker(GITHUB_REPO)
+                info = checker.check_for_update(VERSION)
+            except Exception as e:
+                logger.warning(f"Vérification des mises à jour échouée : {e}")
+            self._update_check_finished.emit(info, manual)
+
+        threading.Thread(target=do_check, daemon=True).start()
+
+    def _on_update_check_finished(self, info: Optional[UpdateInfo], manual: bool):
+        if manual:
+            self.settings_tab.set_update_check_loading(False)
+
+        if info is None:
+            if manual:
+                QMessageBox.information(
+                    self, "Mises à jour",
+                    "Vous utilisez déjà la dernière version disponible."
+                )
+            return
+
+        if self._show_update_dialog(info):
+            self._download_update(info)
+
+    def _show_update_dialog(self, info: UpdateInfo) -> bool:
+        """Affiche le détail de la nouvelle version (notes de release en Markdown)
+        et retourne True si l'utilisateur souhaite télécharger la mise à jour."""
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Mise à jour disponible")
+        dialog.setMinimumSize(560, 420)
+
+        layout = QVBoxLayout(dialog)
+
+        header = QLabel(
+            f"<b>Une nouvelle version ({info.version}) est disponible</b>"
+            f" (version actuelle : {VERSION})"
+        )
+        header.setWordWrap(True)
+        layout.addWidget(header)
+
+        notes_browser = QTextBrowser(dialog)
+        notes_browser.setOpenExternalLinks(True)
+        notes_browser.setMarkdown(info.release_notes or "*Aucune note de version fournie.*")
+        layout.addWidget(notes_browser)
+
+        buttons = QHBoxLayout()
+        buttons.addStretch()
+        later_btn = QPushButton("Plus tard")
+        download_btn = QPushButton("Télécharger et installer")
+        download_btn.setDefault(True)
+        buttons.addWidget(later_btn)
+        buttons.addWidget(download_btn)
+        layout.addLayout(buttons)
+
+        later_btn.clicked.connect(dialog.reject)
+        download_btn.clicked.connect(dialog.accept)
+
+        return dialog.exec() == QDialog.Accepted
+
+    def _download_update(self, info: UpdateInfo):
+        filename = info.download_url.rsplit("/", 1)[-1] or "installer_MTG_GENERATOR.exe"
+        dest_path = Path(tempfile.gettempdir()) / filename
+
+        self._update_progress_dialog = QProgressDialog(
+            f"Téléchargement de la version {info.version}…", "Annuler", 0, 100, self
+        )
+        self._update_progress_dialog.setWindowModality(Qt.WindowModal)
+        self._update_progress_dialog.setMinimumDuration(0)
+        self._update_progress_dialog.setValue(0)
+        self._update_progress_dialog.canceled.connect(
+            lambda: setattr(self, "_update_download_canceled", True)
+        )
+        self._update_download_canceled = False
+
+        def do_download():
+            try:
+                response = requests.get(
+                    info.download_url,
+                    headers={"User-Agent": "MTG-Generator-UpdateChecker"},
+                    stream=True,
+                    timeout=60,
+                )
+                response.raise_for_status()
+                total = int(response.headers.get("content-length", 0))
+                downloaded = 0
+                with open(dest_path, "wb") as f:
+                    for chunk in response.iter_content(chunk_size=256 * 1024):
+                        if self._update_download_canceled:
+                            return
+                        if not chunk:
+                            continue
+                        f.write(chunk)
+                        downloaded += len(chunk)
+                        if total:
+                            self._update_download_progress.emit(int(downloaded * 100 / total))
+                self._update_download_finished.emit(str(dest_path))
+            except Exception as e:
+                self._update_download_error.emit(str(e))
+
+        threading.Thread(target=do_download, daemon=True).start()
+
+    def _on_update_download_progress(self, percent: int):
+        if hasattr(self, "_update_progress_dialog"):
+            self._update_progress_dialog.setValue(percent)
+
+    def _on_update_download_finished(self, file_path: str):
+        if hasattr(self, "_update_progress_dialog"):
+            self._update_progress_dialog.close()
+
+        reply = QMessageBox.question(
+            self,
+            "Téléchargement terminé",
+            "La mise à jour a été téléchargée avec succès.\n\n"
+            "Voulez-vous lancer l'installateur maintenant ? "
+            "L'application va se fermer.",
+            QMessageBox.Yes | QMessageBox.No,
+        )
+        if reply == QMessageBox.Yes:
+            try:
+                os.startfile(file_path)
+                self.close()
+            except Exception as e:
+                QMessageBox.warning(
+                    self, "Erreur",
+                    f"Impossible de lancer l'installateur automatiquement : {e}\n\n"
+                    f"Fichier téléchargé : {file_path}"
+                )
+
+    def _on_update_download_error(self, error_msg: str):
+        if hasattr(self, "_update_progress_dialog"):
+            self._update_progress_dialog.close()
+        QMessageBox.warning(
+            self, "Erreur de téléchargement",
+            f"Impossible de télécharger la mise à jour : {error_msg}"
+        )

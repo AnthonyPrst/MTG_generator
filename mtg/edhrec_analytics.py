@@ -7,6 +7,8 @@ import requests
 import logging
 from dataclasses import dataclass
 
+from mtg.scryfall_http import SCRYFALL_HEADERS
+
 logger = logging.getLogger(__name__)
 
 
@@ -57,7 +59,7 @@ class EDHRecAnalytics:
             time.sleep(0.1)
             search_url = f"https://api.scryfall.com/cards/named"
             params = {"exact": commander_name}
-            response = requests.get(search_url, params=params, timeout=30)
+            response = requests.get(search_url, params=params, headers=SCRYFALL_HEADERS, timeout=30)
             response.raise_for_status()
             card_data = response.json()
             

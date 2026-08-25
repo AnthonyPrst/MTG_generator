@@ -2,6 +2,8 @@
 
 import requests
 from typing import Optional, Dict
+
+from mtg.scryfall_http import SCRYFALL_HEADERS
 from PySide6.QtWidgets import (
     QLabel, QDialog, QVBoxLayout, QPushButton, QGraphicsDropShadowEffect,
     QWidget, QHBoxLayout,
@@ -225,7 +227,7 @@ def open_card_image_dialog(parent, card: Dict, external_provider=None):
         return
 
     try:
-        resp = requests.get(url, timeout=10)
+        resp = requests.get(url, headers=SCRYFALL_HEADERS, timeout=10)
         resp.raise_for_status()
         pix = QPixmap()
         pix.loadFromData(resp.content)
