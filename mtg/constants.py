@@ -1,4 +1,4 @@
-VERSION = "1.8.0"
+VERSION = "1.8.1"
 CONTACT = "manalab7388@gmail.com"
 YOUTUBE_URL = "https://www.youtube.com/@ManaLab-FR"
 GITHUB_REPO = "AnthonyPrst/MTG_generator"

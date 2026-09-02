@@ -3,7 +3,7 @@
 from typing import List
 from PySide6.QtWidgets import QComboBox
 from PySide6.QtGui import QPixmap, QPainter, QStandardItemModel, QStandardItem, QColor, QBrush
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, Signal, QEvent
 
 
 class CheckableComboBox(QComboBox):
@@ -58,8 +58,21 @@ class CheckableComboBox(QComboBox):
         
         # Empêcher la fermeture du popup au clic
         self.view().pressed.connect(self._on_item_pressed)
+        # Empêche Qt de re-basculer nativement la checkbox au relâchement du
+        # clic quand celui-ci tombe sur l'indicateur : sans ça, un clic
+        # précis sur la case cochait puis décochait immédiatement l'item.
+        self.view().viewport().installEventFilter(self)
         self.setMinimumWidth(100)
-        
+
+    def eventFilter(self, obj, event):
+        if obj is self.view().viewport() and event.type() == QEvent.MouseButtonRelease:
+            index = self.view().indexAt(event.pos())
+            if index.isValid():
+                item = self._model.itemFromIndex(index)
+                if item and item.isCheckable():
+                    return True
+        return super().eventFilter(obj, event)
+
     def _on_item_pressed(self, index):
         item = self._model.itemFromIndex(index)
         if item and item.isCheckable():

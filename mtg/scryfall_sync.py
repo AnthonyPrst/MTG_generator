@@ -140,6 +140,24 @@ class ScryfallSyncManager:
                 destination.unlink()
             return False
     
+    @staticmethod
+    def _convert_jsonl_gz_to_json(src_path: Path, dest_path: Path) -> None:
+        """Convertit un fichier JSONL compressé gzip en fichier JSON array.
+
+        Scryfall fournit désormais les bulk data au format JSONL (un objet
+        JSON par ligne) compressé en gzip via `jsonl_download_uri`, au lieu
+        d'un unique fichier JSON array servi via `download_uri`.
+        """
+        cards = []
+        with gzip.open(src_path, 'rt', encoding='utf-8') as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                cards.append(json.loads(line))
+        with open(dest_path, 'w', encoding='utf-8') as f:
+            json.dump(cards, f)
+
     def needs_update(self, max_age_days: int = 7) -> bool:
         """Vérifie si une mise à jour est nécessaire.
         
@@ -219,12 +237,14 @@ class ScryfallSyncManager:
         default_url = None
         remote_updated_at = None
         
+        oracle_is_jsonl_gz = False
         for item in bulk_info.get('data', []):
             if item.get('type') == 'oracle_cards':
-                oracle_url = item.get('download_uri')
+                oracle_url = item.get('download_uri') or item.get('jsonl_download_uri')
+                oracle_is_jsonl_gz = not item.get('download_uri') and bool(item.get('jsonl_download_uri'))
                 remote_updated_at = item.get('updated_at')
             elif item.get('type') == 'default_cards':
-                default_url = item.get('download_uri')
+                default_url = item.get('download_uri') or item.get('jsonl_download_uri')
         
         if not oracle_url:
             if progress_callback:
@@ -240,16 +260,29 @@ class ScryfallSyncManager:
         if progress_callback:
             progress_callback(0, 0, 0, 0, "Téléchargement Oracle Cards...")
         
-        temp_oracle = self.data_dir / "oracle-cards.json.tmp"
+        temp_suffix = ".jsonl.gz.tmp" if oracle_is_jsonl_gz else ".json.tmp"
+        temp_oracle = self.data_dir / f"oracle-cards{temp_suffix}"
         if not self._download_file(oracle_url, temp_oracle, wrap_progress):
             if progress_callback:
                 progress_callback(-1, 0, 0, 0, "Erreur téléchargement Oracle Cards")
             return False
         
-        # Renommer le fichier temporaire
         if self.oracle_cards_file.exists():
             self.oracle_cards_file.unlink()
-        temp_oracle.rename(self.oracle_cards_file)
+        
+        if oracle_is_jsonl_gz:
+            # Le bulk data Scryfall est maintenant fourni au format JSONL compressé
+            # (un objet JSON par ligne, fichier gzip). On le convertit en JSON array
+            # classique pour rester compatible avec le reste du code.
+            if progress_callback:
+                progress_callback(-1, 0, 0, 0, "Décompression Oracle Cards...")
+            try:
+                self._convert_jsonl_gz_to_json(temp_oracle, self.oracle_cards_file)
+            finally:
+                if temp_oracle.exists():
+                    temp_oracle.unlink()
+        else:
+            temp_oracle.rename(self.oracle_cards_file)
         
         # Note: default-cards (~500 MB) n'est pas téléchargé par défaut.
         # oracle-cards (~160 MB) suffit pour les recherches et synergies.
