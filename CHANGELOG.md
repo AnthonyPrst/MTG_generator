@@ -4,6 +4,12 @@ All notable changes to this project are documented in this file.
 
 The format is inspired by `Keep a Changelog`, and versioning follows `SemVer` where practical.
 
+## [v1.8.1] - 2026-09-01
+
+### Fixed
+
+- Fixed Scryfall bulk data synchronization: Scryfall's bulk-data API now only exposes `jsonl_download_uri` (gzip-compressed JSONL) instead of the previous `download_uri` (plain JSON), which caused sync to silently fail with "URL oracle-cards non trouvée". The sync now downloads and decompresses the JSONL bulk data and converts it to the format expected by the rest of the app.
+
 ## [v1.8.0] - 2026-08-25
 
 ### Added

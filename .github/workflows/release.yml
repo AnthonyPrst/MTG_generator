@@ -1,0 +1,88 @@
+name: Release on changelog update
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - CHANGELOG.md
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Extract version and release notes
+        id: changelog
+        run: |
+          python - <<'PYEOF'
+          import re
+          import pathlib
+          import os
+
+          version_match = re.search(
+              r'VERSION\s*=\s*"([^"]+)"',
+              pathlib.Path("mtg/constants.py").read_text(encoding="utf-8"),
+          )
+          if not version_match:
+              raise SystemExit("Impossible de trouver VERSION dans mtg/constants.py")
+          version = version_match.group(1)
+          tag = f"v{version}"
+
+          changelog = pathlib.Path("CHANGELOG.md").read_text(encoding="utf-8")
+          heading_pattern = re.compile(
+              rf"^##\s+\[v?{re.escape(version)}\][^\n]*\n", re.MULTILINE
+          )
+          match = heading_pattern.search(changelog)
+          if not match:
+              raise SystemExit(
+                  f"Aucune section '## [{tag}]' trouvée dans CHANGELOG.md pour la version {version}"
+              )
+
+          start = match.end()
+          next_heading = re.search(r"^##\s+\[", changelog[start:], re.MULTILINE)
+          end = start + next_heading.start() if next_heading else len(changelog)
+          notes = changelog[start:end].strip()
+
+          if not notes:
+              raise SystemExit(f"La section changelog pour {tag} est vide")
+
+          output_path = os.environ["GITHUB_OUTPUT"]
+          with open(output_path, "a", encoding="utf-8") as f:
+              f.write(f"version={version}\n")
+              f.write(f"tag={tag}\n")
+              delimiter = "EOF_RELEASE_NOTES"
+              f.write(f"notes<<{delimiter}\n{notes}\n{delimiter}\n")
+          PYEOF
+
+      - name: Check if tag already exists
+        id: tag_check
+        run: |
+          if git rev-parse "${{ steps.changelog.outputs.tag }}" >/dev/null 2>&1 || \
+             git ls-remote --tags origin | grep -q "refs/tags/${{ steps.changelog.outputs.tag }}$"; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create GitHub Release
+        if: steps.tag_check.outputs.exists == 'false'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.changelog.outputs.tag }}
+          name: ${{ steps.changelog.outputs.tag }}
+          body: ${{ steps.changelog.outputs.notes }}
+          target_commitish: ${{ github.sha }}
